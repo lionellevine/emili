@@ -1,29 +1,17 @@
 # video chat with OpenAI models (pipe real-time emotion logs along with user's chats)
-# now with GUI
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QThread
+from PyQt5.QtWidgets import QApplication # GUI uses PyQt
+from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import ChatApp, VideoPlayerWorker
 from emili_core import * # core threading logic
 
 import sys
 import argparse
-from paz.backend.camera import VideoPlayer
 from paz.backend.camera import Camera
-from paz.pipelines import DetectMiniXceptionFER
 import threading
 import time
 from datetime import datetime
-#import json
-import numpy as np
-#from matplotlib import pyplot as plt
-import queue
-#import re
-#import pygame # for audio playback of text-to-speech
 import os
-
-sys.path.append('/Users/jhana/Dropbox/Private/LAISR/mood')
-from utils import get_response
 
 from openai import OpenAI
 client = OpenAI()

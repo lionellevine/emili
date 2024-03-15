@@ -16,19 +16,21 @@ class VideoPlayerWorker(QObject):
     finished = pyqtSignal()
     frameReady = pyqtSignal(np.ndarray)
 
-    def __init__(self, image_size, pipeline, camera, topic='image'):
+    def __init__(self, start_time, image_size, pipeline, camera, topic='image'):
         super().__init__()
+        self.start_time = start_time
         self.image_size = image_size
-        self.pipeline = pipeline
+        self.pipeline = pipeline # specifies what to do with each frame
         self.camera = camera
         self.topic = topic
+        self.last_frame_sent = 0 
         self.stop_flag = False
 
     def step(self):
         if self.camera.is_open() is False:
             raise ValueError('Camera has not started. Call ``start`` method.')
 
-        frame = self.camera.read()
+        frame = self.camera.read() # shape: [height, width, 3], dtype: uint8
         if frame is None:
             print('Frame: None')
             return None
@@ -44,8 +46,7 @@ class VideoPlayerWorker(QObject):
             if image is None:
                 continue
             image = resize_image(image, tuple(self.image_size)) # image is a numpy array of shape [width,height,3] and dtype uint8
-            #print("emitting frameReady signal")
-            self.frameReady.emit(image)
+            self.frameReady.emit(image)      
         self.camera.stop()
 
 # Define a signal class to handle new chat messages
@@ -87,12 +88,12 @@ class ChatApp(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        self.chat_signal = ChatSignal()
+        self.signal = ChatSignal()
         self.init_chat_tab()
         self.init_FER_tab()
         self.init_transcript_tab()
-        self.chat_signal.new_message.connect(self.display_new_message)
-        self.chat_signal.update_transcript.connect(self.update_transcript_display)
+        self.signal.new_message.connect(self.display_new_message)
+        self.signal.update_transcript.connect(self.update_transcript_display)
 
     def closeEvent(self, event): # called when user closes the GUI window
         self.end_session_event.set()  # Signal other threads that the session should end
@@ -101,7 +102,7 @@ class ChatApp(QMainWindow):
     def act_on_user_input(self):
         user_input = self.chat_input.text().rstrip('\n')  # remove trailing newline
         if user_input:
-            self.chat_signal.new_message.emit({"role": "user", "content": user_input}) # Signal chat pane to display user message
+            self.signal.new_message.emit({"role": "user", "content": user_input}) # Signal chat pane to display user message
             self.chat_input.clear()
             self.chat_timestamps.put(time_since(self.start_time))  # milliseconds since start of session
             self.chat_queue.put(user_input) # pass user message to the assembler thread
@@ -176,15 +177,13 @@ class ChatApp(QMainWindow):
             colorful_text = f"<span style='font-size:18pt;'>{sender}: <span style='color:green;'>{content}</span></span><br>"
             self.chat_display.append(colorful_text) # todo: check for verbose
 
-    def update_transcript_display(self, transcripts):
-        messages, full_transcript = transcripts
+    def update_transcript_display(self, full_transcript):
         # Convert the JSON data to a pretty-printed string
         transcript_json = json.dumps(full_transcript, indent=4, sort_keys=False) # newlines escape as '\\n'
         transcript_json = transcript_json.replace('\\n', '\n')  # Replace escaped newlines with actual newlines
         scroll_position = self.transcript_display.verticalScrollBar().value()  # Save the current scroll position
         self.transcript_display.setPlainText(transcript_json)  # renders as plain text, no HTML
         self.transcript_display.verticalScrollBar().setValue(scroll_position) # Restore the scroll position
-
 
         # transcript_html = transcript_json.replace('\\n', '<br>') # render line breaks
         # self.transcript_display.setHtml(transcript_html)

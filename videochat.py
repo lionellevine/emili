@@ -20,15 +20,18 @@ if __name__ == "__main__":
 
     # pricing as of March 2024 per 1M tokens read: gpt-3.5-turbo-0125 $0.50, gpt-4-0125-preview $10, gpt-4 $30
     model_name = "gpt-4-0125-preview" # start with a good model
+    vision_model_name = "gpt-4-vision-preview" # can this take regular text inputs too?
     secondary_model_name = "gpt-3.5-turbo-0125" # switch to a cheaper model if the conversation gets too long
     max_context_length = 16000
     start_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     start_time = time.time() # all threads can access this, no need to pass it!
-    tock_interval = None # default 60000 ms between OpenAI API calls, if no user text input. Set None to disable
 
     transcript_path = "transcript" # full and condensed transcripts are written here at end of session
     if not os.path.exists(transcript_path):
         os.makedirs(transcript_path)
+    snapshot_path = "snapshot" # snapshots of camera frames sent to OpenAI are written here
+    if not os.path.exists(snapshot_path):
+        os.makedirs(snapshot_path)
     if(use_tts):
         tts_path = "tts_audio" # temporary storage for text-to-speech audio files
         if not os.path.exists(tts_path):
@@ -44,24 +47,22 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui_app = ChatApp(start_time, chat_window_dims, user_chat_name, assistant_chat_name, chat_queue, chat_timestamps, new_chat_event, end_session_event)
 
+    pipeline = Emolog(start_time, [args.offset, args.offset]) # video processing pipeline
+
     tick_thread = threading.Thread(target=tick)
     tick_thread.start()
 
-    EMA_thread = threading.Thread(target=EMA_thread, args=(start_time,), daemon=True)
+    EMA_thread = threading.Thread(target=EMA_thread, args=(start_time,snapshot_path,pipeline), daemon=True)
     EMA_thread.start()
 
     sender_thread = threading.Thread(
         target=sender_thread, 
-        args=(model_name, secondary_model_name, max_context_length, gui_app, transcript_path, start_time_str), 
+        args=(model_name, vision_model_name, secondary_model_name, max_context_length, gui_app, transcript_path, start_time_str), 
         daemon=True)
     sender_thread.start()
 
-    assembler_thread = threading.Thread(target=assembler_thread, daemon=True)
+    assembler_thread = threading.Thread(target=assembler_thread, args=(start_time,snapshot_path,pipeline), daemon=True)
     assembler_thread.start()
-
-    if(tock_interval is not None):
-        timer_thread = threading.Thread(target=timer_thread, args=(start_time,tock_interval), daemon=True)
-        timer_thread.start()
 
     print(f"Video chat with {model_name} using emotion labels sourced from on-device camera.")
     print(f"Chat is optional, the assistant will respond to your emotions automatically!")
@@ -74,10 +75,11 @@ if __name__ == "__main__":
     print("QThread.currentThread()", QThread.currentThread())
 
     video_dims = [800, 450] # width, height (16:9 aspect ratio)
-    video_thread = QThread() # video thread: GPT-4 says OpenCV is safe in a QThread but not a regular thread?
+    video_thread = QThread() # video thread: OpenCV is safe in a QThread but not a regular thread
     video_worker = VideoPlayerWorker(
+        start_time,
         video_dims,
-        Emolog(start_time, [args.offset, args.offset]), 
+        pipeline, # applied to each frame of video
         camera)
     video_worker.moveToThread(video_thread)
 

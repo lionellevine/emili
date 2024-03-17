@@ -25,7 +25,7 @@ from ..datasets import MINIMAL_HAND_CONFIG
 class TunnelBoxes(Processor): # Turns a time series into a colorful tunnel
 
     def __init__(self, class_names=None, colors=None,
-                 weighted=False, scale=1.0, with_score=True):
+                 weighted=True, scale=1.0, with_score=True):
         self.class_names = class_names
         self.colors = colors
         self.weighted = weighted

@@ -585,10 +585,11 @@ def adjust_for_salience(normalized_scores): # expects 7 scores normalized to 0-1
         emotion.append(emotion_matrix[i][j])
     return emotion, salience # emotion is a string (empty if salience is 0); salience is 0-5
     
-def tick(tick_interval=tick_interval): # suggest tick_interval = 1000 ms
+def tick(tick_interval=tick_interval): # for use in a thread that ticks every tick_interval ms
+    # suggest tick_interval=1000 ms for EMILI, 40ms for frame refresh rate
     while not end_session_event.is_set():
         time.sleep(tick_interval/1000) # convert to seconds
-        tick_event.set() # alert EMA_thread to compute new EMA
+        tick_event.set() # alert other threads (EMILI: EMA_thread computes new EMA; visualization: GUI draws a new frame)
 
 def stop_all_threads():
     new_chat_event.set() 
@@ -626,7 +627,7 @@ class Emolog(DetectMiniXceptionFER): # video pipeline for facial emotion recogni
                     argmax = k
             if(max_height>150): # don't log small faces (helps remove false positives)
                 face_id = f"{argmax+1} of {num_faces}"
-                box = faces[argmax] # log emotions for the largest face only 
+                box = faces[argmax] # log emotions for the largest face only. works well in a single-user setting. todo: improve for social situations! 
                 emotion_data = {
                     "time": current_time,
                     "face": face_id,

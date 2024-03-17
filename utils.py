@@ -88,7 +88,6 @@ def get_api_vision_response(messages, model="gpt-4-vision-preview", temperature=
             "messages": messages,
             "max_tokens": max_tokens
         }
-        print(payload)
 
         api_response = requests.post(endpoint_url, headers=headers, json=payload)
         json_response = api_response.json()

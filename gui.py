@@ -1,14 +1,15 @@
 from PyQt5.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QVBoxLayout
-from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QTransform
 
 #from paz.backend.camera import VideoPlayer
 #from paz.backend.camera import Camera
 #from paz.pipelines import DetectMiniXceptionFER
-from paz.backend.image import show_image, resize_image
+from paz.backend.image import show_image, resize_image, draw_rectangle
 from paz.backend.image.opencv_image import convert_color_space, BGR2RGB
 import numpy as np
 import json
+import math
 
 from emili_core import time_since
 
@@ -30,31 +31,168 @@ class VideoPlayerWorker(QObject):
         if self.camera.is_open() is False:
             raise ValueError('Camera has not started. Call ``start`` method.')
 
-        frame = self.camera.read() # shape: [height, width, 3], dtype: uint8
+        frame = self.camera.read() # shape: [height, width, 3], dtype: uint8. Macbook camera height=720, width=1280
         if frame is None:
-            print('Frame: None')
+            print('No camera input.')
             return None
         frame = convert_color_space(frame, BGR2RGB)
-        return self.pipeline(frame)
+        return self.pipeline(frame) # FER pipeline returns a dictionary with keys 'image' and 'boxes2D' (bounding boxes for faces)
 
-    def run(self):
+    def run(self): # this is where the main thread ends up living its lonely life
         self.camera.start()
         while not self.stop_flag:
-            output = self.step() # FER pipeline returns a dictionary with keys 'image' and 'boxes2D' (bounding boxes for faces)
+            output = self.step() #  dictwith keys 'image' and 'boxes2D' (bounding boxes for faces)
             image = output[self.topic] # typically, self.topic = 'image'
-            boxes = output['boxes2D']
             if image is None:
                 continue
             image = resize_image(image, tuple(self.image_size)) # image is a numpy array of shape [width,height,3] and dtype uint8
             self.frameReady.emit(image)      
         self.camera.stop()
 
+class DisplaySignal(QObject):
+    fresh_scores = pyqtSignal(list)  # Signal to display fresh emotion scores, carries list payload with time-series of emotion scores
+    tick = pyqtSignal() # timer to refresh frame
+
+class Visualizer(QMainWindow): # GUI for real-time FER visualizer
+    def __init__(self, start_time, dims, colors, emotion_queue, end_session_event, camera_id=0):
+        super().__init__()
+        self.start_time = start_time
+        self.display_width = dims[0]
+        self.display_height = dims[1]
+        self.x0 = self.display_width // 2
+        self.y0 = self.display_height // 2
+        self.end_session_event = end_session_event
+        self.camera_id = camera_id
+        self.colors=colors # expects an np array of shape (7,3) representing an RGB color for each basic emotion
+        self.emotion_queue = emotion_queue
+        self.time_series = [] # list of [time, scores] pairs
+
+        self.setWindowTitle("Real-time Emotion Visualizer")
+        self.resize(*dims)  # unpack [width, height]
+        self.move(100, 100)  # window position: (0,0) is top left
+
+        # Main layout
+        main_layout = QVBoxLayout()
+
+        # Tab widget for different tabs
+        self.tab_widget = QTabWidget()
+        main_layout.addWidget(self.tab_widget)
+
+        # Central widget setup
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+
+        self.signal = DisplaySignal()
+        self.init_FER_tab() # tab for displaying the real-time video feed
+        self.init_visualizer_tab() # tab for displaying the visualization of emotion scores
+        #self.signal.fresh_scores.connect(self.redraw_visualizer) # redraw the display in the visualizer tab
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.redraw_visualizer)
+        self.timer.start(40) # calls redraw_visualizer every 40 ms
+
+    def init_FER_tab(self):
+        self.FER_tab = QWidget()
+        layout = QVBoxLayout()
+
+        self.FER_image = QLabel()
+        layout.addWidget(self.FER_image)
+
+        self.FER_tab.setLayout(layout)
+        self.tab_widget.addTab(self.FER_tab, "FER")
+
+    def init_visualizer_tab(self):
+        self.visualizer_tab = QWidget()
+        layout = QVBoxLayout()
+
+        self.visualizer_image = QLabel()
+        layout.addWidget(self.visualizer_image)
+
+        self.visualizer_tab.setLayout(layout)
+        self.tab_widget.addTab(self.visualizer_tab, "Tunnel")
+        
+    def redraw_visualizer(self):
+
+        print("redraw_visualizer called. new scores:")
+        
+        # fetch new emotion scores from the queue
+        while not self.emotion_queue.empty(): # append new time series data
+            emotion_data = self.emotion_queue.get() # note: this removes the item from the queue!
+            timestamp = emotion_data['time']
+            scores = emotion_data['scores']
+            print([timestamp,scores])
+            self.time_series.append([timestamp,scores])
+
+        # # bin the time series into 40ms segments and average the scores in each bin
+        #     # todo: finish this to remove flickering.
+        # self.speed = 25 # tunnel expansion rate in pixels per second
+        # self.interval = 1000//self.speed # ms per pixel
+        # num_bins = math.ceil(self.display_height / 2)
+        # total_time_to_display = self.interval * num_bins # most recent ms displayed
+        # earliest_time_to_display = time_since(self.start_time) - total_time_to_display
+        # earliest_time_to_display = self.interval * (earliest_time_to_display // self.interval) # round down to nearest interval
+
+        # for n in range(num_bins):
+        #     bin_start = earliest_time_to_display + n * self.interval
+        #     bin_end = bin_start + self.interval
+        #     bin_scores = []
+        #     for item in self.time_series:
+        #         timestamp, scores = item
+        #         if bin_start <= timestamp < bin_end:
+        #             bin_scores.append(scores)
+        #     if len(bin_scores) > 0:
+        #         average_scores = np.mean(bin_scores, axis=0)
+        #         self.binned_time_series.append([bin_start, average_scores])
+
+        image = np.zeros((self.display_width, self.display_height, 3), dtype=np.uint8)
+
+        current_time = time_since(self.start_time)
+        for item in reversed(self.time_series): # draw the most recent scores first
+            timestamp, scores = item
+            radius = (current_time - timestamp)//40 # most recent data at center, 25 pixels per second
+            x_min, x_max = self.x0 - radius, self.x0 + radius
+            y_min, y_max = self.y0 - radius, self.y0 + radius
+            if(x_min < 0 or y_min < 0):
+                break
+            combined_color = self.colors.T @ (np.array(scores)/1e6) # matrix multiplication (3,7) @ (7,1) = (3,1)
+            image = draw_rectangle(image, (x_min, y_min), (x_max, y_max), combined_color.tolist(), 5) # corner, corner, color, thickness
+
+        # Convert the numpy array image to QPixmap and display it on a QLabel
+        bytesPerLine = 3 * self.display_width
+        qImg = QImage(image.data, self.display_width, self.display_height, bytesPerLine, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qImg)
+
+        #image_label will be displayed in the FER tab of the GUI
+        self.visualizer_image.setPixmap(pixmap)
+
+    def display_frame(self, image): # display what the camera sees, marked up with FER boxes
+        # Convert the numpy array image to QPixmap and display it on a QLabel
+        height, width, channel = image.shape
+        bytesPerLine = 3 * width
+        qImg = QImage(image.data, width, height, bytesPerLine, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qImg)
+
+        # Create a QTransform for horizontal flipping. todo: flip elsewhere so the text doesn't reverse!
+        #reflect = QTransform()
+        #reflect.scale(-1, 1)  # Scale by -1 on the X axis for horizontal flip
+        #reflected_pixmap = pixmap.transformed(reflect)
+
+        #image_label will be displayed in the FER tab of the GUI
+        self.FER_image.setPixmap(pixmap)
+        #self.image_label.setPixmap(reflected_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def closeEvent(self, event): # called when user closes the GUI window
+        self.end_session_event.set()  # Signal other threads that the session should end
+        event.accept()  # Continue the closing process
+
+
 # Define a signal class to handle new chat messages
 class ChatSignal(QObject):
-    new_message = pyqtSignal(dict)  # Signal to display a new user message
-    update_transcript = pyqtSignal(list)  # Signal to update the transcript display
+    new_message = pyqtSignal(dict)  # Signal to display a new user message, carries dict payload with message
+    update_transcript = pyqtSignal(list)  # Signal to update the transcript display, carries list payload with transcript
 
-class ChatApp(QMainWindow):
+class ChatApp(QMainWindow): # GUI for LLM video chat
     def __init__(self, start_time, chat_window_dims, user_chat_name, assistant_chat_name, chat_queue, chat_timestamps, new_chat_event, end_session_event):
         super().__init__()
         self.start_time = start_time

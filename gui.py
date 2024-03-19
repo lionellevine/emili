@@ -11,11 +11,14 @@ import numpy as np
 import json
 import math
 
+import cProfile
+import pstats
+
 from emili_core import time_since
 
 class VideoPlayerWorker(QObject):
-    finished = pyqtSignal()
-    frameReady = pyqtSignal(np.ndarray)
+    frameReady = pyqtSignal(np.ndarray) # signal for new frame
+    finished = pyqtSignal() # signal for thread termination
 
     def __init__(self, start_time, image_size, pipeline, camera, topic='image'):
         super().__init__()
@@ -39,6 +42,10 @@ class VideoPlayerWorker(QObject):
         return self.pipeline(frame) # FER pipeline returns a dictionary with keys 'image' and 'boxes2D' (bounding boxes for faces)
 
     def run(self): # this is where the main thread ends up living its lonely life
+        
+        profiler = cProfile.Profile()
+        profiler.enable()
+
         self.camera.start()
         while not self.stop_flag:
             output = self.step() #  dictwith keys 'image' and 'boxes2D' (bounding boxes for faces)
@@ -48,6 +55,15 @@ class VideoPlayerWorker(QObject):
             image = resize_image(image, tuple(self.image_size)) # image is a numpy array of shape [width,height,3] and dtype uint8
             self.frameReady.emit(image)      
         self.camera.stop()
+
+        profiler.disable()
+        stats = pstats.Stats(profiler)
+        print("VideoPlayerWorker profiler output:")
+        stats.strip_dirs().sort_stats('cumulative').print_stats(10)  # Adjust as needed to view more or fewer lines
+
+    def stop(self):
+        self.stop_flag = True
+        self.finished.emit()
 
 class DisplaySignal(QObject):
     fresh_scores = pyqtSignal(list)  # Signal to display fresh emotion scores, carries list payload with time-series of emotion scores

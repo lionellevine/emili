@@ -54,7 +54,7 @@ class DisplaySignal(QObject):
     tick = pyqtSignal() # timer to refresh frame
 
 class Visualizer(QMainWindow): # GUI for real-time FER visualizer
-    def __init__(self, start_time, dims, colors, speed, pipeline, end_session_event, camera_id=0):
+    def __init__(self, start_time, dims, colors, speed, emotion_queue, end_session_event, camera_id=0):
         super().__init__()
         self.start_time = start_time
         self.display_width = dims[0]
@@ -66,10 +66,10 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.colors=colors # expects an np array of shape (7,3) representing an RGB color for each basic emotion
         self.speed = speed # tunnel expansion rate in pixels per second, recommend 25-50
         self.interval = 1000//speed # ms per pixel
-        self.pipeline = pipeline
+        self.emotion_queue = emotion_queue
         self.num_bins = math.ceil(self.display_height / 2)
-        #self.time_series = [] # list of [time, scores] pairs (moved to main)
-        #self.binned_time_series = [] # averaged over bins of length (moved to main)
+        self.time_series = [] # list of [time, scores] pairs
+        self.binned_time_series = [] # averaged over bins of lengt
 
         self.setWindowTitle("Real-time Emotion Visualizer")
         self.resize(*dims)  # unpack [width, height]
@@ -92,9 +92,9 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.init_visualizer_tab() # tab for displaying the visualization of emotion scores
         self.signal.fresh_scores.connect(self.redraw_visualizer) # redraw the display in the visualizer tab
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.redraw_visualizer)
-        self.timer.start(40) # calls redraw_visualizer every 40 ms
+        # self.timer = QTimer(self)
+        # self.timer.timeout.connect(self.redraw_visualizer)
+        # self.timer.start(40) # calls redraw_visualizer every 40 ms
 
     def init_FER_tab(self):
         self.FER_tab = QWidget()
@@ -118,39 +118,82 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.visualizer_tab.setLayout(layout)
         self.tab_widget.addTab(self.visualizer_tab, "Tunnel")
         
-    def redraw_visualizer(self): # expects a list of [time, scores] pairs in chronological order
+    def redraw_visualizer(self, new_datapoint):
 
-        binned_time_series = self.pipeline.binned_time_series # get the most recent binned time series
-        #print("(redraw_visualizer) binned_time_series: ",binned_time_series)
+        print("redraw_visualizer called. new scores:", new_datapoint)
+        self.binned_time_series.append(new_datapoint)
+        
+        if self.time_series != []:
+            previous_timestamp = self.time_series[-1][0]
+        else:
+            previous_timestamp = 0
+
+        print("self.emotion_queue",self.emotion_queue)
+
+        # fetch new emotion scores from the queue
+        while not self.emotion_queue.empty(): # append new time series data
+            emotion_data = self.emotion_queue.get() # note: this removes the item from the queue!
+            timestamp = emotion_data['time']
+            scores = emotion_data['scores']
+            print([timestamp,scores])
+            self.time_series.append([timestamp,scores])
+
+        if self.time_series == []:
+            return
+
+        # # bin the time series into 40ms segments and average the scores in each bin
+            # todo: finish this to remove flickering.
+        previous_bin_start_time = (previous_timestamp//self.interval)*self.interval
+        # get the recent data that needs binning
+        recent = self.time_series[::-1] # reversed copy of the time series
+        for N,item in enumerate(recent):
+            if item[0]<previous_bin_start_time:
+                break
+        print("recent[:N] ",recent[:N])
+        recent = recent[:N] # truncate and reverse again. This is the data not yet binned, in forward order
+        print("previous_bin_start_time",previous_bin_start_time)
+        bin_start_time = previous_bin_start_time
+        timestamp = 0
+        n=0
+        while n<N:
+            sum = np.zeros(7,dtype=int)
+            count = 0
+            while timestamp < bin_start_time + self.interval and n<N:
+                timestamp, scores = recent[n]
+                sum += scores
+                count += 1
+                n += 1
+            if count>0:
+                mean_scores_in_bin = sum / count
+            else:
+                mean_scores_in_bin = np.zeros(7)
+            self.binned_time_series.append([bin_start_time, mean_scores_in_bin])        
+            bin_start_time += self.interval
+
+        print("time series:", self.time_series)
+        print("binned time series:", self.binned_time_series)
+
 
         image = np.zeros((self.display_width, self.display_height, 3), dtype=np.uint8)
 
         current_time = time_since(self.start_time)
-        for timestamp,scores in reversed(binned_time_series): # draw the most recent scores first
-            # print("(redraw_visualizer) item",item)
-            # timestamp = item[0]
-            # scores = item[1]
-            # if(len(item)>2):
-            #     print("(redraw_visuzlizer) long item! item[2], len(item)",item[2],len(item))
+        for timestamp,scores in reversed(self.binned_time_series): # draw the most recent scores first
             radius = (current_time - timestamp)//self.interval # most recent data at center, 25 pixels per second
-            #print("(redraw_visuzlizer) radius, timestamp, scores/1e6: ",radius,timestamp,scores/1e6)
+            print("timestamp, scores,radius: ",timestamp, scores,radius)
             x_min, x_max = self.x0 - radius, self.x0 + radius
             y_min, y_max = self.y0 - radius, self.y0 + radius
             if(x_min < 0 or y_min < 0):
                 break
             combined_color = self.colors.T @ (scores/1e6) # matrix multiplication (3,7) @ (7,1) = (3,1)
-            #print("(redraw_visualizer) scores/1e6: ",scores/1e6)
-            #print("(redraw_visualizer) combined_color: ",combined_color)
-            #print(f"(redraw_visualizer) {(x_min, y_min)}, {(x_max, y_max)}, {combined_color.tolist()}")
             image = draw_rectangle(image, (x_min, y_min), (x_max, y_max), combined_color.tolist(), 5) # corner, corner, color, thickness
 
-        #print("(redraw_visualizer) image: ",image)
-        #print("(redraw_visualizer) np.amax(image): ",np.amax(image))
         # Convert the numpy array image to QPixmap and display it on a QLabel
         bytesPerLine = 3 * self.display_width
         qImg = QImage(image.data, self.display_width, self.display_height, bytesPerLine, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qImg)
-        self.visualizer_image.setPixmap(pixmap) # pixmap will be displayed in the Visualizer tab of the GUI
+
+        #image_label will be displayed in the FER tab of the GUI
+        self.visualizer_image.setPixmap(pixmap)
 
     def display_frame(self, image): # display what the camera sees, marked up with FER boxes
         # Convert the numpy array image to QPixmap and display it on a QLabel
@@ -164,8 +207,9 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         #reflect.scale(-1, 1)  # Scale by -1 on the X axis for horizontal flip
         #reflected_pixmap = pixmap.transformed(reflect)
 
-        self.FER_image.setPixmap(pixmap) #pixmap will be displayed in the FER tab of the GUI
-        #self.FER_image.setPixmap(reflected_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        #image_label will be displayed in the FER tab of the GUI
+        self.FER_image.setPixmap(pixmap)
+        #self.image_label.setPixmap(reflected_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def closeEvent(self, event): # called when user closes the GUI window
         self.end_session_event.set()  # Signal other threads that the session should end

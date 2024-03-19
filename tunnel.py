@@ -16,6 +16,8 @@ import queue
 import time
 from datetime import datetime
 from copy import deepcopy
+import cProfile
+import pstats
 
 class EmoTunnel(DetectMiniXceptionFER): # video pipeline for real-time FER visualizer
     def __init__(self, start_time, dims, offsets, speed=25):
@@ -122,6 +124,9 @@ def time_since(start_time):
 
 if __name__ == "__main__":
 
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     start_time = time.time() 
     start_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     end_session_event = threading.Event() # triggered when the user closes the GUI window
@@ -177,8 +182,13 @@ if __name__ == "__main__":
     app.exec_() # start the GUI app. This should run in the main thread. Lines after this only execute if user closes the GUI.
 
     print("GUI app closed by user.")
-    video_thread.quit()
-    VideoPlayerWorker.stop_flag = True
+    video_worker.stop()  # Signal the worker to stop
+    #video_thread.quit()  # redundant with above, the finished signal will do this
     print("Quitting video thread...")
-    #video_thread.wait()     # hangs. todo: fix
+    video_thread.wait()  # Wait for the thread to finish
     print("Session ended.")
+    profiler.disable()
+
+    # Print the statistics
+    stats = pstats.Stats(profiler)
+    stats.strip_dirs().sort_stats('cumulative').print_stats(50)  # Adjust the number to show more or fewer lines

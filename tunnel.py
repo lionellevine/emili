@@ -3,6 +3,7 @@
 from PyQt5.QtWidgets import QApplication # GUI uses PyQt
 from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import Visualizer, VideoPlayerWorker
+from sonifier import Sonifier
 #from emili_core import * # core threading logic
 from paz import processors as pr
 from paz.pipelines import DetectMiniXceptionFER # facial emotion recognition pipeline
@@ -25,8 +26,8 @@ class EmoTunnel(DetectMiniXceptionFER): # video pipeline for real-time FER visua
         self.start_time = start_time
         self.current_frame = None # other threads have read access
         self.frame_lock = threading.Lock()  # Protects access to current_frame
-        self.display_width = dims[0]
-        self.display_height = dims[1]
+        self.display_width = dims[1]
+        self.display_height = dims[0]
         self.time_series = [] # list of [time, scores] pairs
         self.binned_time_series = [] # list of [time, mean_scores] pairs
         self.current_bin = [] # list of [time, scores] pairs in the current bin
@@ -86,10 +87,6 @@ class EmoTunnel(DetectMiniXceptionFER): # video pipeline for real-time FER visua
             self.current_bin.append(scores)
     
         return results
-    
-    def construct_frame(self, time_series): # todo: write!
-        frame = np.zeros((self.display_width, self.display_height, 3), dtype=np.uint8)
-        return frame
 
     def report_emotion(self, faces): # add to emotion_queue to make available to other threads
         current_time = time_since(self.start_time) # milliseconds since start of session
@@ -139,7 +136,7 @@ if __name__ == "__main__":
 
     #emotion_queue = queue.Queue() # real-time emotion logs updated continuously
 
-    window_dims = [800, 800] # width, height
+    window_dims = [720, 720] # width, height
     speed = 40 # tunnel speed in pixels per second
     pipeline = EmoTunnel(start_time, 
                          window_dims, 
@@ -151,6 +148,8 @@ if __name__ == "__main__":
     EMOTION_COLORS = [[255, 0, 0], [45, 90, 45], [255, 0, 255], [255, 255, 0],
                   [0, 0, 255], [0, 255, 255], [0, 255, 0]]
     
+    tonic = 110 # Hz
+
     app = QApplication(sys.argv)
     gui_app = Visualizer(start_time, window_dims, np.array(EMOTION_COLORS), speed, pipeline, end_session_event)
 
@@ -162,7 +161,7 @@ if __name__ == "__main__":
     print("gui_app.thread()", gui_app.thread())
     print("QThread.currentThread()", QThread.currentThread())
 
-    video_dims = [640, 360] # width, height (16:9 aspect ratio)
+    video_dims = [800, 450] # width, height (16:9 aspect ratio)
     video_thread = QThread() # video thread: OpenCV is safe in a QThread but not a regular thread
     video_worker = VideoPlayerWorker(
         start_time,
@@ -179,6 +178,13 @@ if __name__ == "__main__":
 
     video_thread.start()
     print("Started video thread.")
+
+    audio_thread = QThread() # audio thread
+    audio_worker = Sonifier(start_time, speed, tonic, pipeline, end_session_event)
+    audio_worker.moveToThread(audio_thread)
+    audio_thread.start()
+    print("Started audio thread.")
+
     app.exec_() # start the GUI app. This should run in the main thread. Lines after this only execute if user closes the GUI.
 
     print("GUI app closed by user.")
@@ -191,4 +197,4 @@ if __name__ == "__main__":
 
     # Print the statistics
     stats = pstats.Stats(profiler)
-    stats.strip_dirs().sort_stats('cumulative').print_stats(50)  # Adjust the number to show more or fewer lines
+    stats.strip_dirs().sort_stats('cumulative').print_stats(20) # stats from the most expensive processes

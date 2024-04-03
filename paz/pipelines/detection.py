@@ -551,6 +551,8 @@ class DetectMiniXceptionFER(Processor):
             # 7-vector of classification probabilities: anger, disgust, fear, happiness, sadness, surprise, neutral
             #print(predictions)
             #print()
+            last_hidden_state = self.classify.get_last_hidden_state(cropped_image)
+            print("last hidden state: ",last_hidden_state)
             box2D.class_name = predictions['class_name']
             box2D.scores = (predictions['scores'] * 1000000).astype(int) # 7 scores add to 1000000, except for rounding errors
             box2D.score = np.amax(box2D.scores) # highest score

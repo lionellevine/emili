@@ -47,6 +47,15 @@ class MiniXceptionFER(SequentialProcessor):
         self.add(pr.ControlMap(pr.ToClassName(self.class_names), [0], [0]))
         self.add(pr.WrapOutput(['class_name', 'scores']))
 
+    def get_last_hidden_state(self, image):
+        # Extract the second to last layer of the model
+        intermediate_layer_model = Model(inputs=self.classifier.model.input,
+                                         outputs=self.classifier.model.layers[-2].output)
+        
+        # Assuming `image` is preprocessed appropriately
+        last_hidden_state = intermediate_layer_model.predict(image)
+        return last_hidden_state
+
 
 class ClassifyHandClosure(SequentialProcessor):
     """Pipeline to classify minimal hand closure status.

@@ -1,5 +1,5 @@
-from PyQt5.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QVBoxLayout
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer
+from PyQt5.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QLabel, QVBoxLayout, QSizePolicy
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QTimer, QSize
 from PyQt5.QtGui import QImage, QPixmap, QTransform
 
 #from paz.backend.camera import VideoPlayer
@@ -75,6 +75,8 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.start_time = start_time
         self.display_width = dims[0]
         self.display_height = dims[1]
+        self.display_size = QSize(self.display_height, self.display_width)
+        self.is_full_screen = False
         self.x0 = self.display_width // 2
         self.y0 = self.display_height // 2
         self.end_session_event = end_session_event
@@ -83,12 +85,13 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.speed = speed # tunnel expansion rate in pixels per second, recommend 25-50
         self.interval = 1000//speed # ms per pixel
         self.pipeline = pipeline
-        self.num_bins = math.ceil(self.display_height / 2)
+        self.num_bins = max(self.x0, self.y0)+1
         #self.time_series = [] # list of [time, scores] pairs (moved to main)
         #self.binned_time_series = [] # averaged over bins of length (moved to main)
 
         self.setWindowTitle("Real-time Emotion Visualizer")
         self.resize(*dims)  # unpack [width, height]
+        self.setMinimumSize(1, 1)  # Allow the user to shrink the window
         self.move(100, 100)  # window position: (0,0) is top left
 
         # Main layout
@@ -96,12 +99,14 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
 
         # Tab widget for different tabs
         self.tab_widget = QTabWidget()
+#        self.tab_widget.setStyleSheet("QWidget { background-color: black; }")
         main_layout.addWidget(self.tab_widget)
+        #self.tab_widget.currentChanged.connect(self.update_images) # called when the user switches tabs
 
-        # Central widget setup
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
+        self.central_widget = QWidget()
+        self.central_widget.setLayout(main_layout)
+        self.setCentralWidget(self.central_widget)
+#        self.central_widget.setStyleSheet("background-color: black;")
 
         self.signal = DisplaySignal()
         self.init_FER_tab() # tab for displaying the real-time video feed
@@ -112,13 +117,22 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         self.timer.timeout.connect(self.redraw_visualizer)
         self.timer.start(40) # calls redraw_visualizer every 40 ms
 
+        self.resizeTimer = QTimer(self) # timout to prevent frequent window resizes when user is dragging the window
+        self.resizeTimer.setSingleShot(True)
+        self.resizeTimer.timeout.connect(self.handle_resize)
+        self.resizeTimer.setInterval(100)  # ms between resize events
+
     def init_FER_tab(self):
         self.FER_tab = QWidget()
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.FER_image = QLabel()
         layout.addWidget(self.FER_image)
         layout.setAlignment(self.FER_image, Qt.AlignCenter)
+        self.FER_image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) # allow user to resize
+        #self.FER_tab.setStyleSheet("background-color: black;")
 
         self.FER_tab.setLayout(layout)
         self.tab_widget.addTab(self.FER_tab, "FER")
@@ -126,22 +140,108 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
     def init_visualizer_tab(self):
         self.visualizer_tab = QWidget()
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.visualizer_image = QLabel()
         layout.addWidget(self.visualizer_image)
         layout.setAlignment(self.visualizer_image, Qt.AlignCenter)
+        self.visualizer_image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) # allow user to resize
+        #self.visualizer_tab.setStyleSheet("background-color: black;")
 
         self.visualizer_tab.setLayout(layout)
         self.tab_widget.addTab(self.visualizer_tab, "Tunnel")
+
+    def resizeEvent(self, event):
+
+        print("(resizeEvent) event.size() ",event.size())
+        self.resizeTimer.start()
+        super().resizeEvent(event)
+
+    def handle_resize(self): # called when user drags the window to change its size
+        # note: only the currently active tab records the new size!
+        # following keeps all tabs the same size as the currently active tab.
+
+        active_tab = self.tab_widget.currentWidget()
+        active_tab_size = active_tab.size()
+        print(f"(handle_resize) active_tab_size: {active_tab_size}")
+
+                # Update the size of the inactive tab to match the active tab
+        if active_tab == self.FER_tab:
+            self.visualizer_tab.resize(active_tab_size)
+        else:
+            self.FER_tab.resize(active_tab_size)
+
+        visualizer_tab_size = self.visualizer_tab.size()
+        print("(resizeEvent) visualizer_tab_size ",visualizer_tab_size) 
+        #visualizer_image_size = self.visualizer_image.size()
+        #print("(resizeEvent) visualizer_image_size ",visualizer_image_size)
+        FER_tab_size = self.FER_tab.size()
+        print("(resizeEvent) FER_tab_size ",FER_tab_size)
+
+        # following has weird behavior without the -2 (triggers repeated resizeEvent calls, why?)
+        self.display_width = active_tab_size.width() - 2
+        self.display_height = active_tab_size.height() - 2
+        self.display_size = QSize(self.display_width, self.display_height)
+        self.x0 = self.display_width // 2
+        self.y0 = self.display_height // 2
+        self.num_bins = max(self.x0, self.y0)+1
+
+    def keyPressEvent(self, event):
+        keystroke = event.key()
+        print("(keyPressEvent) event ", event)
+        print("     keystroke: ", keystroke)
+        # logic to enter/exit full screen mode
+        if not self.resizeTimer.isActive(): # ignore resize events for a brief period after a resize
+            if not self.is_full_screen: # Enter full screen when 'f' is pressed
+                if keystroke == Qt.Key_F: 
+                    self.enterFullScreen()
+            else: # Exit full screen when 'Esc' or 'f' is pressed
+                if keystroke == Qt.Key_F or keystroke == Qt.Key_Escape:
+                    self.exitFullScreen()
         
+    def enterFullScreen(self):
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.CustomizeWindowHint) # don't show window and tab titles in fullscreen mode
+            self.showFullScreen()
+            self.is_full_screen = True
+            QTimer.singleShot(100, self.setFocusToActiveTab)  # Delay focus setting to ensure transition completion
+#            self.tab_widget.setFocus()
+#            self.resizeTimer.start()
+
+    def exitFullScreen(self):
+            self.setWindowFlags(Qt.Window) # show window and tab titles in normal mode
+            self.showNormal()
+            self.is_full_screen = False
+            QTimer.singleShot(100, self.setFocusToActiveTab)  # Delay focus setting to ensure transition completion
+            # self.tab_widget.setFocus()
+            # self.resizeTimer.start()
+
+    def setFocusToActiveTab(self): # Assuming tab_widget is the QTabWidget and each tab is a QWidget
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab is not None:
+            current_tab.setFocus()
+
     def redraw_visualizer(self): # expects a list of [time, scores] pairs in chronological order
 
-        binned_time_series = self.pipeline.binned_time_series # get the most recent binned time series
+        if len(self.pipeline.binned_time_series) == 0: 
+            return # no data to display
+
+        #print("(redraw_visualizer) len(self.pipeline.binned_time_series) ",len(self.pipeline.binned_time_series))
+        binned_time_series = self.pipeline.binned_time_series[-self.num_bins:] # get the most recent binned time series
+        #print("(redraw_visualizer) self.num_bins, len(binned_time_series) ",self.num_bins,len(binned_time_series))
         #print("(redraw_visualizer) binned_time_series: ",binned_time_series)
 
-        image = np.zeros((self.display_width, self.display_height, 3), dtype=np.uint8)
-
+        # pad time series with most recent data to fill the display
         current_time = time_since(self.start_time)
+        last_scores = binned_time_series[-1][1] # most recent scores
+        bin_end_time = binned_time_series[-1][0] + self.interval # most recent bin end time
+        while bin_end_time < current_time: # catch up to current_time
+            #print("(redraw_visualizer) catching up, empty bin")
+            binned_time_series.append([bin_end_time, last_scores]) # pad data with most recent scores
+            bin_end_time += self.interval
+
+        # draw the tunnel
+        image = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
         for timestamp,scores in reversed(binned_time_series): # draw the most recent scores first
             # print("(redraw_visualizer) item",item)
             # timestamp = item[0]
@@ -152,13 +252,13 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
             #print("(redraw_visuzlizer) radius, timestamp, scores/1e6: ",radius,timestamp,scores/1e6)
             x_min, x_max = self.x0 - radius, self.x0 + radius
             y_min, y_max = self.y0 - radius, self.y0 + radius
-            if(x_min < 0 or y_min < 0):
+            if(x_min < 0 and y_min < 0): # draw partial rectangles too
                 break
             combined_color = self.colors.T @ (scores/1e6) # matrix multiplication (3,7) @ (7,1) = (3,1)
             #print("(redraw_visualizer) scores/1e6: ",scores/1e6)
             #print("(redraw_visualizer) combined_color: ",combined_color)
             #print(f"(redraw_visualizer) {(x_min, y_min)}, {(x_max, y_max)}, {combined_color.tolist()}")
-            image = draw_rectangle(image, (x_min, y_min), (x_max, y_max), combined_color.tolist(), 5) # corner, corner, color, thickness
+            image = draw_rectangle(image, (x_min, y_min), (x_max, y_max), combined_color.tolist(), 1) # corner, corner, color, thickness
 
         #print("(redraw_visualizer) image: ",image)
         #print("(redraw_visualizer) np.amax(image): ",np.amax(image))
@@ -174,13 +274,17 @@ class Visualizer(QMainWindow): # GUI for real-time FER visualizer
         bytesPerLine = 3 * width
         qImg = QImage(image.data, width, height, bytesPerLine, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qImg)
-
+        #print(f"(display_frame) pixmap.size() {pixmap.size()}") # 800, 450
         # Create a QTransform for horizontal flipping. todo: flip elsewhere so the text doesn't reverse!
         #reflect = QTransform()
         #reflect.scale(-1, 1)  # Scale by -1 on the X axis for horizontal flip
         #reflected_pixmap = pixmap.transformed(reflect)
 
-        self.FER_image.setPixmap(pixmap) #pixmap will be displayed in the FER tab of the GUI
+        resized_pixmap = pixmap.scaled(self.display_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        #print(f"(display_frame) resized_pixmap.size() {resized_pixmap.size()}")
+        self.FER_image.setPixmap(resized_pixmap)
+
+        #self.FER_image.setPixmap(pixmap) #pixmap will be displayed in the FER tab of the GUI
         #self.FER_image.setPixmap(reflected_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def closeEvent(self, event): # called when user closes the GUI window

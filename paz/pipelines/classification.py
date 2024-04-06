@@ -47,14 +47,26 @@ class MiniXceptionFER(SequentialProcessor):
         self.add(pr.ControlMap(pr.ToClassName(self.class_names), [0], [0]))
         self.add(pr.WrapOutput(['class_name', 'scores']))
 
-    def get_last_hidden_state(self, image):
-        # Extract the second to last layer of the model
-        intermediate_layer_model = Model(inputs=self.classifier.model.input,
-                                         outputs=self.classifier.model.layers[-2].output)
-        
-        # Assuming `image` is preprocessed appropriately
-        last_hidden_state = intermediate_layer_model.predict(image)
-        return last_hidden_state
+    def get_last_hidden_state(self, image): # last hidden state before emotion scores
+
+        # Initialize the preprocessing sequence
+        preprocess = PreprocessImage(self.classifier.input_shape[1:3], None)
+        preprocess.insert(0, pr.ConvertColorSpace(pr.RGB2GRAY))
+        preprocess.add(pr.ExpandDims(0))
+        preprocess.add(pr.ExpandDims(-1))
+
+        # Apply the preprocessing steps to the image
+        processed_image = preprocess(image)
+
+        # Define the intermediate model to extract the output of the 'add_4' layer
+        # This should be defined once, e.g., in the __init__ method for efficiency
+        intermediate_layer_model = Model(inputs=self.classifier.input,
+                                        outputs=self.classifier.get_layer('add_4').output)
+
+        # Get the last hidden state for the processed image
+        last_hidden_state = intermediate_layer_model.predict(processed_image)
+
+        return last_hidden_state # shape [1,6,6,128]
 
 
 class ClassifyHandClosure(SequentialProcessor):

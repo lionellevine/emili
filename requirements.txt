@@ -1,0 +1,7 @@
+paz
+opencv-python
+pygame
+tenacity
+requests
+openai
+gensound

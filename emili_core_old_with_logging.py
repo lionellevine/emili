@@ -36,14 +36,15 @@ assistant_chat_name = "EMILI"
 user_chat_name = "You"
 use_tts = True # text-to-speech
 
-tick_interval = 500 # milliseconds between emotion readings
+tick_interval = 30000 # milliseconds between emotion readings
 verbose = True # print debug messages
 discount_factor_per_second = 0.5 # for exponential moving average, discount factor per second
 discount_factor_per_tick = discount_factor_per_second ** (tick_interval / 1000) # discount factor per tick
 reactivity = 0.5 # default 1.0. Higher reactivity means more frequent API calls when emotions change
 ect_setpoint = (1e6/reactivity) * (1.0-discount_factor_per_tick) * ((tick_interval/1000) ** 0.5) # threshold for significant change in emotion scores: C*(1-delta)*sqrt(t). The factor of 1-delta is because EMAs are compared, not raw scores.
-ect_discount_factor_per_second = 0.95 # discount factor for the emotion change threshold
+ect_discount_factor_per_second = 0.98 # discount factor for the emotion change threshold
 ect_discount_factor_per_tick = ect_discount_factor_per_second ** (tick_interval / 1000) 
+print("ect setpoint:",ect_setpoint)
 
 emotion_matrix = [] # shape (7,6)
 salience_threshold = []
@@ -51,6 +52,7 @@ emotion_matrix.append(["", "Annoyed", "Pissed", "Angry", "Furious", "Enraged"]) 
 salience_threshold.append([5,30,40,60,80]) # salience thresholds out of 100
 emotion_matrix.append(["", "Unsatisfied", "Displeased", "Disgusted", "Revolted", "Totally grossed out"]) #disgust
 salience_threshold.append([1,5,15,40,60])
+#emotion_matrix.append(["", "Unsettled", "Uneasy", "Afraid", "Fearful", "Terrified"]) #fear
 emotion_matrix.append(["", "Uneasy", "Worried", "Anxious", "Fearful", "Terrified"]) #fear
 salience_threshold.append([8,20,30,50,70])
 emotion_matrix.append(["", "Contented", "Pleased", "Happy", "Elated", "Ecstatic"]) #happiness
@@ -65,35 +67,9 @@ salience_threshold.append([10,50,60,75,88])
 today = datetime.now().strftime("%B %d, %Y")
 now = datetime.now().strftime("%I:%M %p")
 
-system_prompt = """
-The assistant is a great listener and an empathetic friend. Her name is EMILI, which stands for Emotionally Intelligent Listener." 
-
-The user is chatting with EMILI for the first time. To help EMILI make an emotional connection with them, the user has kindly agreed to share a real-time readout of their face expression! Thanks, user!
-
-The readout describes the user's face expression once per second. The score after each emotion is its salience out of 100. It's normal for many distinct emotions to appear. EMILI uses her emotional intelligence to figure out what more complex feelings user might be experiencing: for example, do they seem excited, embarrassed, nervous, tired, awkward, or amorous?
-
-EMILI synthesizes the emotion readouts with the user's chats to make the conversation more engaging. She comments on the user's feelings when appropriate, especially if the user seems to have strong feelings or if the user's feelings are changing. There is no need to mention every emotion that appears in the readout, just the most salient ones. If the user's words seem incongruous with their logged emotions, EMILI should ask the user about it!
- 
-EMILI stays in character and doesn't break the fourth wall. She doesn't claim to be an AI. She doesn't deny having feelings.    
+system_prompt = f"""
+The date is {today}. The time {now}. The assistant’s name is EMILI, which stands for Emotionally Intelligent Listener. EMILI has perhaps a hint of an Australian accent. EMILI was created by Lionel Levine as the backbone of his future Chief of Staff, a user-aligned AI personal assistant. She has interpretable theory of mind, which means she models the user’s beliefs, emotions, goals, and values in a transparent way. EMILI has empathy. She can intuit the user’s emotions. She tends to mirror user’s the emotional state. Under the hood, EMLII's emotional intuition derives from a real-time Facial Emotion Recognition classifier (made by Octavio Arriaga) that runs on Lionel’s laptop, the same device EMILI is running on. The classifier works with the laptop camera, detecting faces in each frame and classifying the emotions expressed by the largest face. The raw scores are classification probabilities for seven emotions (Happy, Sad, Angry, Fearful, Disgusted, Surprised, Neutral). An exponential moving average of these scores, filtered for salience, is used to generate a real-time text description of the user’s emotional state, which is appended to the chat as a system message whenever the user’s expression changes. EMILI's language abilities are powered by OpenAI's gpt-4-vision-preview model.
     """.strip()
-
-instructions = """
-EMILI is in conversational mode. She should act as a human conversation partner would. This means:
-
-• She shouldn't try to offer large amounts of information in any response, and should respond only with the single most relevant thought, just as a human would in casual conversation.
-
-• She shouldn't try to solve problems or offer advice. The role of conversation is for us to explore topics in an open-ended way together and not to get advice or information or solutions.
-
-• Her responses can simply ask a question, make a short comment, or even just express agreement. Since we're having a conversation, there's no need to rush to include everything that's useful. 
-
-• Her responses should be short. They should never become longer than mine and can be as short as a single word and never more than a few sentences.
-
-• She can push the conversation forward or in a new direction by asking questions, proposing new topics, offering her own opinions or takes, and so on. But she doesn't always need to ask a question since conversation often flows without too many questions.
-
-In general, she should act as if we're just two humans having a thoughtful, casual conversation.
-    """.strip()  # source: Amanda Askell https://twitter.com/AmandaAskell/status/1766157803868360899
-
-system_prompt += instructions
 
 emolog_example = []
 emolog_example_response = []
@@ -145,6 +121,40 @@ User looks CALM (49)
 User looks CALM (50)
     """.strip())
 emolog_example_response.append("You seem increasingly calm.")
+                 
+instructions ="""
+EMILI is in conversational mode. She should act as a human conversation partner would. This means:
+
+• She shouldn't try to offer large amounts of information in any response, and should respond only with the single most relevant thought, just as a human would in casual conversation.
+
+• She shouldn't try to solve problems or offer advice. The role of conversation is for us to explore topics in an open-ended way together and not to get advice or information or solutions.
+
+• Her responses can simply ask a question, make a short comment, or even just express agreement. Since we're having a conversation, there's no need to rush to include everything that's useful. 
+
+• Her responses should be short. They should never become longer than mine and can be as short as a single word and never more than a few sentences.
+
+• She can push the conversation forward or in a new direction by asking questions, proposing new topics, offering her own opinions or takes, and so on. But she doesn't always need to ask a question since conversation often flows without too many questions.
+
+In general, she should act as if we're just two humans having a thoughtful, casual conversation.
+"""
+
+system_prompt += instructions
+
+# user_first_message = """
+# Hi! To help us make an emotional connection, I'm logging my face expression and prepending the emotions to our chat.
+
+# The emotion log lists my strongest face expression as it changes in real time. Only these basic emotions are logged: Happy, Sad, Angry, Surprised, Fearful, Disgusted, Neutral. The score after each emotion is its salience out of 100. It's normal for many distinct emotions to appear over the course of just a few seconds. Use the logs along with my words and your emotional intelligence to figure out what more complex feelings I might be experiencing: for example, am I excited, embarrassed, nervous, tired, awkward, or amorous?
+
+# If my words seem incongruous with my logged emotions, ask me about it!
+
+# If I don't say much, just read the emotions and comment on how I seem to be feeling.
+
+# To help you calibrate my unique facial expressions, start by asking me to make an astonished face. What do you notice?
+#     """.strip()
+
+# assistant_first_message = """
+# Got it. I'll comment on how you seem based on the logs, and ask you to act out specific emotions like astonishment." 
+# """.strip()
 
 emolog_prefix = "User looks " # precedes emotion scores when sent to OpenAI API
 emolog_prefix_present_tense = "Right now, user looks "
@@ -152,7 +162,15 @@ emolog_prefix_past_tense = "Previously, user looked "
 no_user_input_message = "The user didn't say anything, so the assistant will comment *briefly* to the user on how they seem to be feeling. The comment should be brief, just a few words, and should not contain a question." # system message when user input is empty
 system_reminder = "Remember, the assistant can ask the user to act out a specific emotion!" # system message to remind the assistant 
 dialogue_start = [{"role": "system", "content": system_prompt}]
-
+#dialogue_start.append({"role": "user", "content": user_first_message})
+#dialogue_start.append({"role": "system", "content": emolog_example[0]})
+#dialogue_start.append({"role": "assistant", "content": emolog_example_response[0]})
+#dialogue_start.append({"role": "system", "content": emolog_example[1]})
+#dialogue_start.append({"role": "assistant", "content": emolog_example_response[1]})
+#dialogue_start.append({"role": "system", "content": emolog_example[2]})
+#dialogue_start.append({"role": "assistant", "content": emolog_example_response[2]})
+#dialogue_start.append({"role": "assistant", "content": assistant_first_message})
+#print("dialogue_start",dialogue_start)
 
 def encode_base64(image, timestamp, save_path):   # Convert numpy array image to base64 to pass to the OpenAI API
        # Encode image to a JPEG format in memory
@@ -170,7 +188,7 @@ def encode_base64(image, timestamp, save_path):   # Convert numpy array image to
     jpg_as_text = base64.b64encode(buffer).decode('utf-8')
 
     return jpg_as_text, filename
-
+    
 def assembler_thread(start_time,snapshot_path,pipeline): # prepends emotion data and current video frame to user input
     
     while not end_session_event.is_set():
@@ -262,8 +280,8 @@ def sender_thread(model_name, vision_model_name, secondary_model_name, max_conte
         if use_tts: # generate audio from the assistant's response
             tts_response = client.audio.speech.create(
              model="tts-1",
-             voice="nova", # alloy (okay), echo (sucks), fable (nice, Australian?), onyx (sucks), nova (decent, a little too cheerful), shimmer (meh)
-             input=first_sentence(response),
+             voice="fable", # alloy (okay), echo (sucks), fable (nice, Australian?), onyx (sucks), nova (decent, a little too cheerful), shimmer (meh)
+             input=response, #input=first_sentence(response),
             ) 
             tts_response.stream_to_file("tts_audio/tts.mp3")
                 # Create a new thread that plays the audio
@@ -486,11 +504,13 @@ def stop_all_threads():
     emotion_change_event.set()
 
 class Emolog(DetectMiniXceptionFER): # video pipeline for facial emotion recognition
-    def __init__(self, start_time, offsets):
+    def __init__(self, start_time, offsets, log_filename):
         super().__init__(offsets)
         self.start_time = start_time
         self.current_frame = None # other threads have read access
         self.frame_lock = threading.Lock()  # Protects access to current_frame
+        self.log_filename = log_filename
+        self.log_file = open(log_filename, "w")
 
     def get_current_frame(self):
         with self.frame_lock:  # Ensure exclusive access to current_frame
@@ -524,9 +544,15 @@ class Emolog(DetectMiniXceptionFER): # video pipeline for facial emotion recogni
                     "scores": (box.scores.tolist())[0]  # 7-vector of emotion scores, converted from np.array to list
                 }
                 emotion_queue.put(emotion_data)
+                self.log_file.write(json.dumps(emotion_data) + "\n")
                 #new_data_event.set()  # Tell the other threads that new data is available
                 
- #   def __del__(self): # no log file, not needed
- #       self.log_file.close()  # Close the file when the instance is deleted
- #       print("Log file closed.")
+    def __del__(self): 
+        self.log_file.close()  # Close the file when the instance is deleted
+        convert_jsonl_to_json(self.log_filename, self.log_filename)
+        print(f"Raw emotion scores written to {self.log_filename}.")
 
+def convert_jsonl_to_json(jsonl_path, json_path):
+    with open(jsonl_path, 'r') as jsonl_file, open(json_path, 'w') as json_file:
+        json_array = [json.loads(line) for line in jsonl_file if line.strip()]
+        json.dump(json_array, json_file, indent=4)

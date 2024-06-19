@@ -1,7 +1,7 @@
-paz
+PyQt5
+numpy
 opencv-python
-pygame
 tenacity
-requests
 openai
-gensound
+pygame
+tensorflow==2.15.0

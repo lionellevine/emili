@@ -3,8 +3,7 @@
 from PyQt5.QtWidgets import QApplication # GUI uses PyQt
 from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import Visualizer, VideoPlayerWorker
-from sonifier import Sonifier
-#from emili_core import * # core threading logic
+#from sonifier import Sonifier # optional audio thread
 from paz import processors as pr
 from paz.pipelines import DetectMiniXceptionFER # facial emotion recognition pipeline
 
@@ -13,7 +12,6 @@ import sys
 import argparse
 from paz.backend.camera import Camera
 import threading
-import queue
 import time
 from datetime import datetime
 from copy import deepcopy
@@ -121,7 +119,7 @@ def time_since(start_time):
 
 if __name__ == "__main__":
 
-    profiler = cProfile.Profile()
+    profiler = cProfile.Profile() # for performance profiling
     profiler.enable()
 
     start_time = time.time() 
@@ -179,11 +177,11 @@ if __name__ == "__main__":
     video_thread.start()
     print("Started video thread.")
 
-    audio_thread = QThread() # audio thread
-    audio_worker = Sonifier(start_time, speed, tonic, pipeline, end_session_event)
-    audio_worker.moveToThread(audio_thread)
-    audio_thread.start()
-    print("Started audio thread.")
+    # audio_thread = QThread() # audio thread
+    # audio_worker = Sonifier(start_time, speed, tonic, pipeline, end_session_event)
+    # audio_worker.moveToThread(audio_thread)
+    # audio_thread.start()
+    # print("Started audio thread.")
 
     app.exec_() # start the GUI app. This should run in the main thread. Lines after this only execute if user closes the GUI.
 
@@ -195,6 +193,6 @@ if __name__ == "__main__":
     print("Session ended.")
     profiler.disable()
 
-    # Print the statistics
+    # Print profiling stats
     stats = pstats.Stats(profiler)
     stats.strip_dirs().sort_stats('cumulative').print_stats(20) # stats from the most expensive processes

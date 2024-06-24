@@ -130,7 +130,7 @@ EMILI is in conversational mode. She should act as a human conversation partner 
 • She shouldn't try to solve problems or offer advice. The role of conversation is for us to explore topics in an open-ended way together and not to get advice or information or solutions.
 
 • Her responses can simply ask a question, make a short comment, or even just express agreement. Since we're having a conversation, there's no need to rush to include everything that's useful. 
-
+add_message
 • Her responses should be short. They should never become longer than mine and can be as short as a single word and never more than a few sentences.
 
 • She can push the conversation forward or in a new direction by asking questions, proposing new topics, offering her own opinions or takes, and so on. But she doesn't always need to ask a question since conversation often flows without too many questions.
@@ -199,7 +199,7 @@ def assembler_thread(start_time,snapshot_path,pipeline): # prepends emotion data
         new_chat_event.clear()  # Reset the event
 
         emolog_message = construct_emolog_message() # note: this code repeated in timer_thread
-        message_queue.put([{"role": "system", "content": emolog_message}])
+        message_queue.put([{"role": "system", "content": emolog_message, "time": time_since(start_time)//100}])
         
         current_frame = pipeline.current_frame
         if current_frame is not None: # capture a frame and send it to the API
@@ -212,9 +212,9 @@ def assembler_thread(start_time,snapshot_path,pipeline): # prepends emotion data
             next_chat = chat_queue.get() #FIFO
             user_message += next_chat + "\n"
         user_message = user_message.rstrip('\n') # remove trailing newline
-        message_queue.put([{"role": "user", "content": user_message}])
+        message_queue.put([{"role": "user", "content": user_message, "time": time_since(start_time)//100}])
         if len(user_message) < 10: # user didn't say much, remind the assistant what to do!
-            message_queue.put([{"role": "system", "content": system_reminder}])
+            message_queue.put([{"role": "system", "content": system_reminder, "time": time_since(start_time)//100}])
 
         new_message_event.set()  # Signal new message to the sender thread
 
@@ -231,10 +231,13 @@ def sender_thread(model_name, vision_model_name, secondary_model_name, max_conte
         new_messages = []
         while not message_queue.empty(): # get all new messages
             next_message = message_queue.get()
-            new_messages.append(next_message)
-            if next_message[0]["role"] == "user":
+            #print("next_message:",next_message)
+            next_message_trimmed =  [{'role': next_message[0]['role'], 'content': next_message[0]['content']}]
+            new_messages.append(next_message_trimmed)
+            if next_message_trimmed[0]["role"] == "user":
                 new_user_chat = True
         messages,full_transcript = add_message(new_messages,[messages,full_transcript],gui_app.signal)
+        #print("messages:",messages)
         # Query the API for the model's response
         if new_user_chat: # get response to chat
 #            print("new user chat")
@@ -313,11 +316,12 @@ def add_message(new_messages, transcripts, signal): # append one or messages to 
         # transcripts = [transcript1, ...] # list of lists of dicts
     #print("new_messages: ",new_messages)
     for msg in new_messages: # len(msg)=1 for text, 2 for text and image
-        #print("msg:",msg)
+        print("msg:",msg)
         #print("Adding new message:")
         #print_message(msg[-1]["role"], msg[-1]["content"])
         transcripts[0].append(msg[0]) # sent to OpenAI: contains the base64 image if present
         transcripts[1].append(msg[-1]) # recorded in full_transcript: contains only the image filename
+        #transcripts[2].append(msg[-1]) 
     signal.update_transcript.emit(transcripts[1]) # Signal GUI transcript tab to update
     return transcripts
 
@@ -369,7 +373,7 @@ def EMA_thread(start_time,snapshot_path,pipeline): # calculates the exponential 
                 print(f"Change in emotions: {last_ema//1e4} -> {ema//1e4}, change = {change//1e4}")
                 change_detected = (change > 0.5*ect_setpoint) # bool evaluates to True if the inequality holds
                 emolog_message = construct_emolog_message(change_detected) 
-                message_queue.put([{"role": "system", "content": emolog_message}])
+                message_queue.put([{"role": "system", "content": emolog_message, "time": time_since(start_time)//100}])
                 current_frame = pipeline.current_frame
                 if current_frame is not None: # capture a frame and send it to the API
                     base64_image, filename = encode_base64(pipeline.current_frame, time_since(start_time), snapshot_path)
@@ -537,7 +541,7 @@ class Emolog(DetectMiniXceptionFER): # video pipeline for facial emotion recogni
                 face_id = f"{argmax+1} of {num_faces}"
                 box = faces[argmax] # log emotions for the largest face only. works well in a single-user setting. todo: improve for social situations! 
                 emotion_data = {
-                    "time": current_time,
+                    "time": current_time//100,
                     "face": face_id,
                     "class": box.class_name,
                     "size": box.height,

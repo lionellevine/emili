@@ -3,7 +3,7 @@
 from PyQt5.QtWidgets import QApplication # GUI uses PyQt
 from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import ChatApp, VideoPlayerWorker
-from emili_core import * # core threading logic
+from emili_core_old_with_logging import * # core threading logic
 
 import sys
 import argparse
@@ -47,7 +47,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui_app = ChatApp(start_time, chat_window_dims, user_chat_name, assistant_chat_name, chat_queue, chat_timestamps, new_chat_event, end_session_event)
 
-    pipeline = Emolog(start_time, [args.offset, args.offset]) # video processing pipeline
+    pipeline = Emolog(start_time, [args.offset, args.offset],'emo_log_file') # video processing pipeline
+    user_id = 100000 # set your user ID here
 
     tick_thread = threading.Thread(target=tick)
     tick_thread.start()
@@ -61,7 +62,7 @@ if __name__ == "__main__":
         daemon=True)
     sender_thread.start()
 
-    assembler_thread = threading.Thread(target=assembler_thread, args=(start_time,snapshot_path,pipeline), daemon=True)
+    assembler_thread = threading.Thread(target=assembler_thread, args=(start_time,snapshot_path,pipeline,user_id), daemon=True)
     assembler_thread.start()
 
     print(f"Video chat with {model_name} using emotion labels sourced from on-device camera.")

@@ -189,7 +189,7 @@ def encode_base64(image, timestamp, save_path):   # Convert numpy array image to
 
     return jpg_as_text, filename
     
-def assembler_thread(start_time,snapshot_path,pipeline): # prepends emotion data and current video frame to user input
+def assembler_thread(start_time,snapshot_path,pipeline, user_id): # prepends emotion data and current video frame to user input
     
     while not end_session_event.is_set():
 #       print("Waiting for new user input.")
@@ -212,7 +212,7 @@ def assembler_thread(start_time,snapshot_path,pipeline): # prepends emotion data
             next_chat = chat_queue.get() #FIFO
             user_message += next_chat + "\n"
         user_message = user_message.rstrip('\n') # remove trailing newline
-        message_queue.put([{"role": "user", "content": user_message, "time": time_since(start_time)//100}])
+        message_queue.put([{"role": "user", "content": user_message, "time": time_since(start_time)//100, 'user_id': user_id}])
         if len(user_message) < 10: # user didn't say much, remind the assistant what to do!
             message_queue.put([{"role": "system", "content": system_reminder, "time": time_since(start_time)//100}])
 
@@ -229,14 +229,16 @@ def sender_thread(model_name, vision_model_name, secondary_model_name, max_conte
         new_message_event.clear()  # Reset the event
         new_user_chat = False
         new_messages = []
+        new_messages_full = []
         while not message_queue.empty(): # get all new messages
             next_message = message_queue.get()
             #print("next_message:",next_message)
             next_message_trimmed =  [{'role': next_message[0]['role'], 'content': next_message[0]['content']}]
             new_messages.append(next_message_trimmed)
+            new_messages_full.append(next_message)
             if next_message_trimmed[0]["role"] == "user":
                 new_user_chat = True
-        messages,full_transcript = add_message(new_messages,[messages,full_transcript],gui_app.signal)
+        messages, full_transcript = add_message(new_messages=new_messages, new_full_messages=[[new_messages_full]],transcripts=[messages, full_transcript], signal=gui_app.signal)
         #print("messages:",messages)
         # Query the API for the model's response
         if new_user_chat: # get response to chat
@@ -270,7 +272,7 @@ def sender_thread(model_name, vision_model_name, secondary_model_name, max_conte
         #print("response length", response_length)
         new_message = {"role": "assistant", "content": response}
         gui_app.signal.new_message.emit(new_message) # Signal GUI to display the new chat
-        messages,full_transcript = add_message([[new_message]],[messages,full_transcript],gui_app.signal)
+        messages,full_transcript = add_message(new_messages=[[new_message]], new_full_messages=[[new_message]],transcripts=[messages,full_transcript],signal=gui_app.signal)
         # if model_name != secondary_model_name and total_length > 0.4*max_context_length:
         #     print(f"(Long conversation; switching from {model_name} to {secondary_model_name} to save on API costs.)")
         #     model_name = secondary_model_name # note: changes model_name in thread only
@@ -311,7 +313,8 @@ def play_audio():
     pygame.mixer.music.load("tts_audio/tts.mp3") # todo: sometimes overwritten by new audio! It just switches in this case, which seems okay.
     pygame.mixer.music.play()
 
-def add_message(new_messages, transcripts, signal): # append one or messages to both transcripts
+def add_message(new_messages, new_full_messages, transcripts, signal): # append one or messages to both transcripts
+        # new_full_messages = [[{"role": speaker, "content": text}], ... ] # list of lists of dicts
         # new_messages = [[{"role": speaker, "content": text}], ... ] # list of lists of dicts
         # transcripts = [transcript1, ...] # list of lists of dicts
     #print("new_messages: ",new_messages)
@@ -320,8 +323,10 @@ def add_message(new_messages, transcripts, signal): # append one or messages to 
         #print("Adding new message:")
         #print_message(msg[-1]["role"], msg[-1]["content"])
         transcripts[0].append(msg[0]) # sent to OpenAI: contains the base64 image if present
-        transcripts[1].append(msg[-1]) # recorded in full_transcript: contains only the image filename
+        
         #transcripts[2].append(msg[-1]) 
+    for msg in new_full_messages:
+        transcripts[1].append(msg[-1]) # recorded in full_transcript: contains only the image filename
     signal.update_transcript.emit(transcripts[1]) # Signal GUI transcript tab to update
     return transcripts
 

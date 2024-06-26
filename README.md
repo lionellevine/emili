@@ -1,3 +1,7 @@
+# SPAR Summer 2024: Improving RLHF with Emotion-Based Feedback
+
+Updated 2024-06-19
+
 # EMILI (Emotionally Intelligent Listener)
 videochat.py: Adds emotion tags sourced from video to your OpenAI API calls.
 

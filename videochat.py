@@ -47,7 +47,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui_app = ChatApp(start_time, chat_window_dims, user_chat_name, assistant_chat_name, chat_queue, chat_timestamps, new_chat_event, end_session_event)
 
-    pipeline = Emolog(start_time, [args.offset, args.offset],'emo_log_file') # video processing pipeline
+    pipeline = Emolog(start_time, [args.offset, args.offset],f'Emili_raw_{start_time_str}') # video processing pipeline
     user_id = 100000 # set your user ID here
 
     tick_thread = threading.Thread(target=tick)

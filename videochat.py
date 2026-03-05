@@ -19,9 +19,13 @@ client = OpenAI()
 if __name__ == "__main__":
 
     # pricing as of March 2024 per 1M tokens read: gpt-3.5-turbo-0125 $0.50, gpt-4-0125-preview $10, gpt-4 $30
-    model_name = "gpt-4-0125-preview" # start with a good model
-    vision_model_name = "gpt-4-vision-preview" # can this take regular text inputs too?
-    secondary_model_name = "gpt-3.5-turbo-0125" # switch to a cheaper model if the conversation gets too long
+    # model_name = "gpt-4-0125-preview" # start with a good model (deprecated)
+    # vision_model_name = "gpt-4-vision-preview" # deprecated
+    # secondary_model_name = "gpt-3.5-turbo-0125" # deprecated
+    # pricing as of 2025 per 1M tokens: gpt-4o-mini $0.15/$0.60, gpt-4o $2.50/$10
+    model_name = "gpt-4o"
+    vision_model_name = "gpt-4o" # gpt-4o supports vision natively via standard API
+    secondary_model_name = "gpt-4o-mini"
     max_context_length = 16000
     start_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     start_time = time.time() # all threads can access this, no need to pass it!

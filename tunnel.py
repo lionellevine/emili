@@ -4,10 +4,11 @@ from PyQt5.QtWidgets import QApplication # GUI uses PyQt
 from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import Visualizer, VideoPlayerWorker
 #from sonifier import Sonifier # optional audio thread
-from paz import processors as pr
-from paz.pipelines import DetectMiniXceptionFER # facial emotion recognition pipeline
-
 import numpy as np
+import cv2
+from PIL import Image
+import torch
+from transformers import AutoImageProcessor, SiglipForImageClassification
 import sys
 import argparse
 from paz.backend.camera import Camera
@@ -18,9 +19,13 @@ from copy import deepcopy
 import cProfile
 import pstats
 
-class EmoTunnel(DetectMiniXceptionFER): # video pipeline for real-time FER visualizer
-    def __init__(self, start_time, dims, offsets, speed=25):
-        super().__init__(offsets)
+class EmoTunnel: # video pipeline for real-time FER visualizer using SigLIP2
+    # SigLIP2 classes: Ahegao(0), Angry(1), Happy(2), Neutral(3), Sad(4), Surprise(5)
+    # EMILI classes:   anger(0), disgust(1), fear(2), happiness(3), sadness(4), surprise(5), neutral(6)
+    SIGLIP_TO_EMILI = [-1, 0, 3, 6, 4, 5]  # siglip index -> emili index (-1 = discard)
+    EMILI_LABELS = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise', 'neutral']
+
+    def __init__(self, start_time, dims, offsets=None, speed=25):
         self.start_time = start_time
         self.current_frame = None # other threads have read access
         self.frame_lock = threading.Lock()  # Protects access to current_frame
@@ -28,91 +33,112 @@ class EmoTunnel(DetectMiniXceptionFER): # video pipeline for real-time FER visua
         self.display_height = dims[0]
         self.time_series = [] # list of [time, scores] pairs
         self.binned_time_series = [] # list of [time, mean_scores] pairs
-        self.current_bin = [] # list of [time, scores] pairs in the current bin
+        self.current_bin = [] # list of scores in the current bin
         self.speed = speed # tunnel expansion rate in pixels per second, recommend 25-50
         self.interval = 1000//speed # ms per pixel
         self.bin_end_time = self.interval # start a new bin every interval ms
-        self.no_data_indicator = np.full(7,1e5) # mean scores for an empty bin
-        self.last_bin_mean = np.full(7,1e5) # mean scores for the most recent bin
-        #self.signal = signal
-        #self.draw = pr.TunnelBoxes(self.time_series, self.colors, True) # override the default draw method
+        self.no_data_indicator = np.full(7, 1e5) # mean scores for an empty bin
+        self.last_bin_mean = np.full(7, 1e5) # mean scores for the most recent bin
 
-    def get_current_frame(self):
-        with self.frame_lock:  # Ensure exclusive access to current_frame
-            return self.current_frame
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+
+        model_id = "prithivMLmods/Facial-Emotion-Detection-SigLIP2"
+        print(f"Loading {model_id} (downloading on first run, ~350 MB)...")
+        self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+        self.processor = AutoImageProcessor.from_pretrained(model_id)
+        self.model = SiglipForImageClassification.from_pretrained(model_id).to(self.device).eval()
+        print(f"Emotion model loaded on {self.device}.")
+
+    def __call__(self, image):
+        return self.call(image)
 
     def call(self, image):
-
-        # binning logic: every interval ms, record the mean scores of the current bin, signal GUI to update, start a new bin
+        # binning logic: every interval ms, record the mean scores of the current bin
         current_time = time_since(self.start_time)
-        #print(f"(pipeline.call) current_time: {current_time}")
-        #print(f"(pipeline.call) bin_end_time: {self.bin_end_time}")
-        if self.bin_end_time < current_time: # done with current bin
+        if self.bin_end_time < current_time:
             new_bin_data = []
-            if(len(self.current_bin)>0):
-                #print(f"(pipeline.call) done with bin")
-                #print(f"(pipeline.call) current_bin: {self.current_bin}")
+            if len(self.current_bin) > 0:
                 self.last_bin_mean = np.mean(self.current_bin, axis=0)
-                #print(f"(pipeline.call) bin_mean: {self.last_bin_mean}")
                 new_bin_data.append([self.bin_end_time, deepcopy(self.last_bin_mean)])
                 self.bin_end_time += self.interval
-                self.current_bin = [] # start a new bin
-            while(self.bin_end_time < current_time): # catch up to the current time
-                #print("(pipeline.call) catching up, empty bin")
-                self.last_bin_mean = 0.9*self.last_bin_mean + 0.1*self.no_data_indicator # no new data, discount to indicate staleness
-                #print(f"(pipeline.call) bin_end_time: {self.bin_end_time}")
-                #print(f"(pipeline.call) last_bin_mean: {self.last_bin_mean}")
-                new_bin_data.append([self.bin_end_time, deepcopy(self.last_bin_mean)]) # empty bin
-#                new_bin_data.append([self.bin_end_time, np.full(7,1e5)]) # empty bin
+                self.current_bin = []
+            while self.bin_end_time < current_time:
+                self.last_bin_mean = 0.9*self.last_bin_mean + 0.1*self.no_data_indicator
+                new_bin_data.append([self.bin_end_time, deepcopy(self.last_bin_mean)])
                 self.bin_end_time += self.interval
-            #print(f"(pipeline.call) new_bin_data: ")
-            #for timestamp, scores in new_bin_data:
-                #print(f"    (pipeline.call) timestamp, scores/1e6: {timestamp, scores/1e6}")
             self.binned_time_series.extend(new_bin_data)
-            #print("(pipeline.call) binned_time_series:")
-            #for timestamp, scores in reversed(self.binned_time_series):
-            #    print(f"    (pipeline.call) timestamp, scores/1e6: {timestamp, scores/1e6}")
-            #self.signal.emit() # signal GUI to update the visualizer tab
 
-        # get emotion data from current frame
-        results = super().call(image) # classify faces in the image, draw boxes and labels
-        #image, faces = results['image'], results['boxes2D']
-        faces = results['boxes2D']
-        emotion_data = self.report_emotion(faces)
-        if(emotion_data is not None):
-            timestamp, scores = emotion_data['time'], emotion_data['scores']
-            self.time_series.append([timestamp,scores])
-            self.current_bin.append(scores)
-    
-        return results
+        annotated = image.copy()
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
 
-    def report_emotion(self, faces): # add to emotion_queue to make available to other threads
-        current_time = time_since(self.start_time) # milliseconds since start of session
-        num_faces = len(faces)
-        if(num_faces>0):
-            max_height = 0
-            for k,box in enumerate(faces): # find the largest face 
-                if(box.height > max_height):
-                    max_height = box.height
-                    argmax = k
-            if(max_height>150): # don't log small faces (helps remove false positives)
-                face_id = f"{argmax+1} of {num_faces}"
-                box = faces[argmax] # log emotions for the largest face only. works well in a single-user setting. todo: improve for social situations! 
-                emotion_data = {
-                    "time": current_time,
-                    "face": face_id,
-                    "class": box.class_name,
-                    "size": box.height,
-                    "scores": (box.scores.tolist())[0]  # 7-vector of emotion scores, converted from np.array to list
-                }
-                #emotion_queue.put(emotion_data)
-                return emotion_data
-        return None # no large faces found
-                #new_data_event.set()  # Tell the other threads that new data is available
-                
- #   def __del__(self): # no log file, not needed
- #       self.log_file.close()  # Close the file when the instance is deleted
- #       print("Log file closed.")
+        if len(faces) > 0:
+            areas = [w * h for (x, y, w, h) in faces]
+            max_idx = int(np.argmax(areas))
+            x, y, w, h = faces[max_idx]
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(image.shape[1], x + w), min(image.shape[0], y + h)
+
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 0), 2)
+
+            if h > 150:
+                crop = Image.fromarray(image[y1:y2, x1:x2])
+                scores = self._classify(crop)
+                dominant_idx = int(np.argmax(scores))
+                dominant_label = self.EMILI_LABELS[dominant_idx]
+
+                cv2.putText(annotated, dominant_label, (x1, max(0, y1 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
+                self._draw_scores(annotated, scores, x1, y2)
+
+                self.time_series.append([current_time, scores])
+                self.current_bin.append(scores)
+
+        with self.frame_lock:
+            self.current_frame = annotated
+        return {'image': annotated}
+
+    def _draw_scores(self, image, scores, x1, y2):
+        labeled = sorted(
+            [(self.EMILI_LABELS[i], int(scores[i] / 1e4)) for i in range(7)],
+            key=lambda t: t[1], reverse=True
+        )
+        visible = [(label, pct) for label, pct in labeled if pct >= 3]
+        if not visible:
+            return
+
+        line_h, pad = 24, 6
+        bg_x1, bg_y1 = x1, y2 + pad
+        bg_x2 = min(x1 + 155, image.shape[1])
+        bg_y2 = min(bg_y1 + len(visible) * line_h + pad, image.shape[0])
+
+        roi = image[bg_y1:bg_y2, bg_x1:bg_x2]
+        if roi.size > 0:
+            image[bg_y1:bg_y2, bg_x1:bg_x2] = (roi * 0.4).astype(np.uint8)
+
+        y_text = bg_y1 + line_h - 4
+        for label, pct in visible:
+            cv2.putText(image, f"{label}: {pct}", (x1 + 5, y_text),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 230, 0), 1, cv2.LINE_AA)
+            y_text += line_h
+
+    def _classify(self, pil_crop):
+        inputs = self.processor(images=pil_crop, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            logits = self.model(**inputs).logits
+        siglip_probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
+
+        emili_scores = np.zeros(7, dtype=np.float64)
+        for siglip_i, emili_i in enumerate(self.SIGLIP_TO_EMILI):
+            if emili_i >= 0:
+                emili_scores[emili_i] = siglip_probs[siglip_i]
+
+        total = emili_scores.sum()
+        if total > 0:
+            emili_scores /= total
+
+        return (emili_scores * 1e6).tolist()
     
 def time_since(start_time):
     return int((time.time() - start_time) * 1000) # milliseconds since start of session

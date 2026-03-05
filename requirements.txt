@@ -5,3 +5,7 @@ tenacity
 openai
 pygame
 tensorflow==2.15.0
+torch
+transformers
+accelerate
+Pillow

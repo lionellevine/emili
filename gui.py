@@ -13,8 +13,10 @@ import math
 
 import cProfile
 import pstats
+import time
 
-from emili_core import time_since
+def time_since(start_time):
+    return int((time.time() - start_time) * 1000) # milliseconds since start of session
 
 class VideoPlayerWorker(QObject):
     frameReady = pyqtSignal(np.ndarray) # signal for new frame

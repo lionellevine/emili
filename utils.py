@@ -4,6 +4,7 @@ import os
 import json
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
+import keys
 openai.api_key = os.environ["OPENAI_API_KEY"]
 client = openai.OpenAI()
 

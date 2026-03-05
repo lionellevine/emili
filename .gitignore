@@ -1,4 +1,9 @@
 venv/
+my_env/
 tts_audio/
 transcript/
 snapshot/
+__pycache__/
+*.pyc
+*.pyo
+keys.py

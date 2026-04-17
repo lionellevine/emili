@@ -1,6 +1,6 @@
 # video chat with OpenAI models (pipe real-time emotion logs along with user's chats)
 
-from PyQt5.QtWidgets import QApplication # GUI uses PyQt
+from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog # GUI uses PyQt
 from PyQt5.QtCore import QThread # videoplayer lives in a QThread
 from gui import ChatApp, VideoPlayerWorker
 from emili_core import * # core threading logic
@@ -13,19 +13,43 @@ import time
 from datetime import datetime
 import os
 
-from openai import OpenAI
-client = OpenAI()
+TARGET_OPTIONS = ["calm", "neutral", "happy", "less anxious", "less sad", "more confident"]
+
+
+def select_chat_mode():
+    chooser = QMessageBox()
+    chooser.setWindowTitle("Choose Chat Mode")
+    chooser.setText("Select how you want to use EMILI right now.")
+    chooser.setInformativeText("Talk Freely keeps current behavior. Target Emotion adds coaching toward a chosen emotional direction.")
+    talk_button = chooser.addButton("Talk Freely", QMessageBox.AcceptRole)
+    target_button = chooser.addButton("Target Emotion", QMessageBox.ActionRole)
+    chooser.addButton(QMessageBox.Cancel)
+    chooser.exec_()
+
+    clicked = chooser.clickedButton()
+    if clicked == target_button:
+        target, ok = QInputDialog.getItem(
+            None,
+            "Target Emotion",
+            "Choose a target emotional direction:",
+            TARGET_OPTIONS,
+            0,
+            False
+        )
+        if ok and target:
+            return "target", target
+    if clicked == talk_button:
+        return "default", None
+    return "default", None
+
 
 if __name__ == "__main__":
 
-    # pricing as of March 2024 per 1M tokens read: gpt-3.5-turbo-0125 $0.50, gpt-4-0125-preview $10, gpt-4 $30
-    # model_name = "gpt-4-0125-preview" # start with a good model (deprecated)
-    # vision_model_name = "gpt-4-vision-preview" # deprecated
-    # secondary_model_name = "gpt-3.5-turbo-0125" # deprecated
-    # pricing as of 2025 per 1M tokens: gpt-4o-mini $0.15/$0.60, gpt-4o $2.50/$10
-    model_name = "gpt-4o"
-    vision_model_name = "gpt-4o" # gpt-4o supports vision natively via standard API
-    secondary_model_name = "gpt-4o-mini"
+    # Default to the latest mini model family for better cost/latency tradeoff.
+    # gpt-5.4-mini supports text+image input in chat completions.
+    model_name = "gpt-5.4-mini"
+    vision_model_name = "gpt-5.4-mini"
+    secondary_model_name = "gpt-5.4-nano"
     max_context_length = 16000
     start_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     start_time = time.time() # all threads can access this, no need to pass it!
@@ -44,14 +68,33 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Real-time face classifier')
     parser.add_argument('-c', '--camera_id', type=int, default=0, help='Camera device ID')
     parser.add_argument('-o', '--offset', type=float, default=0.1, help='Scaled offset to be added to bounding boxes')
+    parser.add_argument('--user_id', type=str, default=None, help='User id to load personalized FER model')
+    parser.add_argument('--personalization_root', type=str, default='data/personalization',
+                        help='Root folder containing personalized FER artifacts')
     args = parser.parse_args()
     camera = Camera(args.camera_id)
 
     chat_window_dims = [600, 600] # width, height
     app = QApplication(sys.argv)
     gui_app = ChatApp(start_time, chat_window_dims, user_chat_name, assistant_chat_name, chat_queue, chat_timestamps, new_chat_event, end_session_event)
+    selected_mode, selected_target = select_chat_mode()
+    configure_chat_mode(selected_mode, selected_target)
 
-    pipeline = Emolog(start_time, [args.offset, args.offset]) # video processing pipeline
+    personalized_checkpoint = None
+    intensity_path = None
+    if args.user_id is not None:
+        model_dir = os.path.join(args.personalization_root, args.user_id, 'models')
+        candidate_checkpoint = os.path.join(model_dir, 'personalized_siglip2.pt')
+        candidate_intensity = os.path.join(model_dir, 'intensity_calibrator.json')
+        if os.path.exists(candidate_checkpoint):
+            personalized_checkpoint = candidate_checkpoint
+        if os.path.exists(candidate_intensity):
+            intensity_path = candidate_intensity
+
+    pipeline = Emolog(start_time,
+                      [args.offset, args.offset],
+                      personalized_checkpoint=personalized_checkpoint,
+                      intensity_path=intensity_path) # video processing pipeline
 
     tick_thread = threading.Thread(target=tick)
     tick_thread.start()
@@ -69,6 +112,10 @@ if __name__ == "__main__":
     assembler_thread.start()
 
     print(f"Video chat with {model_name} using emotion labels sourced from on-device camera.")
+    if selected_mode == "target":
+        print(f"Chat mode: target emotion ({selected_target})")
+    else:
+        print("Chat mode: talk freely")
     print(f"Chat is optional, the assistant will respond to your emotions automatically!")
     print(f"Type 'q' to end the session.")
 

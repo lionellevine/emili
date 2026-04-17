@@ -10,6 +10,7 @@ import queue
 import time
 from datetime import datetime
 import json
+import os
 from copy import deepcopy
 import numpy as np
 import re
@@ -18,7 +19,18 @@ import base64
 import cv2 # only used for encoding images to base64
 
 from openai import OpenAI
-client = OpenAI()
+client = None
+
+
+def get_tts_client():
+    global client
+    if client is not None:
+        return client
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key is None or len(api_key) == 0:
+        return None
+    client = OpenAI(api_key=api_key)
+    return client
 
 emotion_queue = queue.Queue() # real-time emotion logs updated continuously
 EMA_queue = queue.Queue() # average emotions updated once per second
@@ -155,6 +167,45 @@ no_user_input_message = "The user didn't say anything, so the assistant will com
 system_reminder = "Remember, the assistant can ask the user to act out a specific emotion!" # system message to remind the assistant 
 dialogue_start = [{"role": "system", "content": system_prompt}]
 
+default_system_prompt = system_prompt
+default_no_user_input_message = no_user_input_message
+default_system_reminder = system_reminder
+chat_mode = "default"
+target_emotion = None
+
+
+def configure_chat_mode(mode="default", target=None):
+    global chat_mode
+    global target_emotion
+    global system_prompt
+    global no_user_input_message
+    global system_reminder
+    global dialogue_start
+
+    chat_mode = mode
+    target_emotion = target
+
+    if mode == "target" and target is not None:
+        target_instructions = f"""
+EMILI is in target-emotion mode. The user's stated target emotion is: {target}.
+EMILI's role is to gently help the user move toward that target over the conversation.
+She should:
+• Give short, practical, emotionally supportive responses.
+• Use the user's emotion readout trends to adjust her tone and suggestions.
+• Suggest one small step at a time, and avoid overwhelming advice.
+• Check in briefly on whether the user feels closer to the target emotion.
+• If the user does not want guidance, immediately switch back to normal conversation.
+        """.strip()
+        system_prompt = default_system_prompt + "\n\n" + target_instructions
+        no_user_input_message = f"The user didn't say anything, so the assistant will comment briefly on how they seem to be feeling and, if appropriate, offer one short suggestion that may help them move toward {target}."
+        system_reminder = f"Remember, the assistant is helping the user move toward the target emotion: {target}."
+    else:
+        system_prompt = default_system_prompt
+        no_user_input_message = default_no_user_input_message
+        system_reminder = default_system_reminder
+
+    dialogue_start = [{"role": "system", "content": system_prompt}]
+
 
 def encode_base64(image, timestamp, save_path):   # Convert numpy array image to base64 to pass to the OpenAI API
        # Encode image to a JPEG format in memory
@@ -262,15 +313,17 @@ def sender_thread(model_name, vision_model_name, secondary_model_name, max_conte
             messages = condense(messages) 
  
         if use_tts: # generate audio from the assistant's response
-            tts_response = client.audio.speech.create(
-             model="tts-1",
-             voice="nova", # alloy (okay), echo (sucks), fable (nice, Australian?), onyx (sucks), nova (decent, a little too cheerful), shimmer (meh)
-             input=first_sentence(response),
-            ) 
-            tts_response.stream_to_file("tts_audio/tts.mp3")
-                # Create a new thread that plays the audio
-            audio_thread = threading.Thread(target=play_audio)
-            audio_thread.start()
+            tts_client = get_tts_client()
+            if tts_client is not None:
+                tts_response = tts_client.audio.speech.create(
+                 model="tts-1",
+                 voice="nova", # alloy (okay), echo (sucks), fable (nice, Australian?), onyx (sucks), nova (decent, a little too cheerful), shimmer (meh)
+                 input=first_sentence(response),
+                ) 
+                tts_response.stream_to_file("tts_audio/tts.mp3")
+                    # Create a new thread that plays the audio
+                audio_thread = threading.Thread(target=play_audio)
+                audio_thread.start()
 
     # End of session. Write full and condensed transcripts to file
     filename = f"{transcript_path}/Emili_{start_time_str}.json"
@@ -493,11 +546,21 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
     # Ahegao is discarded; disgust and fear are absent from SigLIP2 (set to 0)
     SIGLIP_TO_EMILI = [-1, 0, 3, 6, 4, 5]  # siglip index -> emili index (-1 = discard)
     EMILI_LABELS = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise', 'neutral']
+    DISPLAY_LABELS = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprised', 'neutral']
+    TARGET_EMOTIONS = ['angry', 'happy', 'neutral', 'sad', 'surprised']
+    TARGET_SIGLIP_INDICES = [1, 2, 3, 4, 5]
+    EMILI_TO_TARGET = {
+        'anger': 'angry',
+        'happiness': 'happy',
+        'sadness': 'sad',
+        'surprise': 'surprised'
+    }
 
-    def __init__(self, start_time, offsets=None):
+    def __init__(self, start_time, offsets=None, personalized_checkpoint=None, intensity_path=None):
         self.start_time = start_time
         self.current_frame = None # other threads have read access
         self.frame_lock = threading.Lock()  # Protects access to current_frame
+        self.intensity_calibrator = None
 
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
@@ -506,7 +569,19 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
         print(f"Loading {model_id} (downloading on first run, ~350 MB)...")
         self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         self.processor = AutoImageProcessor.from_pretrained(model_id)
-        self.model = SiglipForImageClassification.from_pretrained(model_id).to(self.device).eval()
+        self.model = SiglipForImageClassification.from_pretrained(model_id)
+        if personalized_checkpoint is not None and os.path.exists(personalized_checkpoint):
+            payload = torch.load(personalized_checkpoint, map_location='cpu')
+            if isinstance(payload, dict) and 'model_state_dict' in payload:
+                self.model.load_state_dict(payload['model_state_dict'])
+                print(f"Loaded personalized FER checkpoint from {personalized_checkpoint}")
+            else:
+                print(f"Warning: invalid personalized checkpoint format at {personalized_checkpoint}")
+        self.model = self.model.to(self.device).eval()
+        if intensity_path is not None and os.path.exists(intensity_path):
+            with open(intensity_path, "r") as file:
+                self.intensity_calibrator = json.load(file)
+            print(f"Loaded personalized intensity calibrator from {intensity_path}")
         print(f"Emotion model loaded on {self.device}.")
 
     def __call__(self, image):
@@ -526,19 +601,27 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
 
             if h > 150:
                 crop = Image.fromarray(image[y1:y2, x1:x2])
-                scores = self._classify(crop)
+                scores, target_probs = self._classify(crop)
                 dominant_idx = int(np.argmax(scores))
                 dominant_label = self.EMILI_LABELS[dominant_idx]
+                dominant_display = self.DISPLAY_LABELS[dominant_idx]
+                dominant_confidence = float(scores[dominant_idx] / 1e4)
+                intensity = self._predict_intensity(dominant_label, target_probs)
+                if intensity is None:
+                    dominant_text = f"{dominant_display} | conf {dominant_confidence:0.0f}% | intensity N/A"
+                else:
+                    dominant_text = f"{dominant_display} | conf {dominant_confidence:0.0f}% | intensity {intensity:0.1f}/5"
 
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 0), 2)
-                cv2.putText(annotated, dominant_label, (x1, max(0, y1 - 8)),
+                cv2.putText(annotated, dominant_text, (x1, max(0, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
                 self._draw_scores(annotated, scores, x1, y2)
 
                 emotion_data = {
                     "time": time_since(self.start_time),
                     "face": f"1 of {len(faces)}",
-                    "class": dominant_label,
+                    "class": dominant_display,
+                    "intensity": intensity,
                     "size": h,
                     "scores": scores
                 }
@@ -550,7 +633,7 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
 
     def _draw_scores(self, image, scores, x1, y2):
         labeled = sorted(
-            [(self.EMILI_LABELS[i], int(scores[i] / 1e4)) for i in range(7)],
+            [(self.DISPLAY_LABELS[i], int(scores[i] / 1e4)) for i in range(7)],
             key=lambda t: t[1], reverse=True
         )
         visible = [(label, pct) for label, pct in labeled if pct >= 3]
@@ -568,7 +651,7 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
 
         y_text = bg_y1 + line_h - 4
         for label, pct in visible:
-            cv2.putText(image, f"{label}: {pct}", (x1 + 5, y_text),
+            cv2.putText(image, f"{label} conf: {pct}%", (x1 + 5, y_text),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 230, 0), 1, cv2.LINE_AA)
             y_text += line_h
 
@@ -577,6 +660,7 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
         with torch.no_grad():
             logits = self.model(**inputs).logits
         siglip_probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
+        target_probs = torch.softmax(logits[:, self.TARGET_SIGLIP_INDICES], dim=-1).squeeze().cpu().numpy()
 
         emili_scores = np.zeros(7, dtype=np.float64)
         for siglip_i, emili_i in enumerate(self.SIGLIP_TO_EMILI):
@@ -587,5 +671,27 @@ class Emolog: # video pipeline for facial emotion recognition using SigLIP2
         if total > 0:
             emili_scores /= total  # renormalize after dropping Ahegao
 
-        return (emili_scores * 1e6).tolist()
+        return (emili_scores * 1e6).tolist(), target_probs.tolist()
 
+    def _predict_intensity(self, dominant_label, target_probs):
+        target_label = self.EMILI_TO_TARGET.get(dominant_label, None)
+        if target_label is None:
+            return None
+        idx = self.TARGET_EMOTIONS.index(target_label)
+        probability = float(target_probs[idx])
+        sorted_probs = sorted([float(x) for x in target_probs])
+        top2 = sorted_probs[-2] if len(sorted_probs) > 1 else 0.0
+        signal = 0.7 * probability + 0.3 * max(0.0, probability - top2)
+        if self.intensity_calibrator is not None and target_label in self.intensity_calibrator:
+            coeff = self.intensity_calibrator[target_label]
+            if coeff.get('mode') == 'bounded_linear':
+                p10 = coeff.get('p10', 0.0)
+                p90 = coeff.get('p90', 1.0)
+                denom = max(1e-6, p90 - p10)
+                z = np.clip((signal - p10) / denom, 0.0, 1.0)
+                intensity = coeff.get('a', 4.0) * z + coeff.get('b', 1.0)
+            else:
+                return None
+        else:
+            intensity = 1.0 + 4.0 * signal
+        return float(np.clip(intensity, 1.0, 5.0))

@@ -4,9 +4,19 @@ import os
 import json
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
-import keys
-openai.api_key = os.environ["OPENAI_API_KEY"]
-client = openai.OpenAI()
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+client = None
+
+
+def get_client():
+    global client
+    if client is not None:
+        return client
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key is None or len(api_key) == 0:
+        return None
+    client = openai.OpenAI(api_key=api_key)
+    return client
 
 # Most models return a response object: To recover the generated text, use 
 #   response.choices[0].message.content
@@ -48,12 +58,28 @@ def json_to_object(data):
 @retry(wait=wait_exponential(multiplier=1.5, min=1, max=60), stop=stop_after_attempt(6), retry=retry_if_exception_type(Exception))
 def get_api_response(messages, model="gpt-3.5-turbo", temperature=1.0, max_tokens=64, seed=1331, return_full_response=False):
     try:
-        full_response = client.chat.completions.create(
-            model=model,
-            temperature=temperature,
-            messages=messages,
-            max_tokens=max_tokens
-        )
+        openai_client = get_client()
+        if openai_client is None:
+            raise ValueError("OPENAI_API_KEY is not set")
+        # Newer models (e.g. GPT-5.*) expect max_completion_tokens instead of max_tokens.
+        # Fall back for older models/endpoints when needed.
+        try:
+            full_response = openai_client.chat.completions.create(
+                model=model,
+                temperature=temperature,
+                messages=messages,
+                max_completion_tokens=max_tokens
+            )
+        except Exception as first_error:
+            message = str(first_error)
+            if "max_completion_tokens" not in message:
+                raise first_error
+            full_response = openai_client.chat.completions.create(
+                model=model,
+                temperature=temperature,
+                messages=messages,
+                max_tokens=max_tokens
+            )
         if return_full_response:
             return full_response # the full response object
         else:
@@ -87,7 +113,7 @@ def get_api_vision_response(messages, model="gpt-4-vision-preview", temperature=
         payload = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens
+            "max_completion_tokens": max_tokens
         }
 
         api_response = requests.post(endpoint_url, headers=headers, json=payload)

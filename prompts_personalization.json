@@ -1,0 +1,27 @@
+[
+  {"emotion": "happy", "intensity": 1, "prompt": "Show a very slight smile and mild pleasantness."},
+  {"emotion": "happy", "intensity": 2, "prompt": "Think of something funny and show a gentle happy expression."},
+  {"emotion": "happy", "intensity": 3, "prompt": "Think of something that makes you feel fulfilled or satisfied."},
+  {"emotion": "happy", "intensity": 4, "prompt": "Show a strong happy expression with a bigger smile."},
+  {"emotion": "happy", "intensity": 5, "prompt": "Recall one of your happiest memories and show your strongest happy expression."},
+
+  {"emotion": "sad", "intensity": 1, "prompt": "Show a slight down or tired expression."},
+  {"emotion": "sad", "intensity": 2, "prompt": "Think of a time you were disappointed."},
+  {"emotion": "sad", "intensity": 3, "prompt": "Think of a sad memory and show clear sadness."},
+  {"emotion": "sad", "intensity": 4, "prompt": "Show a stronger sad expression."},
+  {"emotion": "sad", "intensity": 5, "prompt": "Think of a time you felt hopeless and show your strongest sad expression."},
+
+  {"emotion": "angry", "intensity": 1, "prompt": "Show mild annoyance."},
+  {"emotion": "angry", "intensity": 2, "prompt": "Think of something that irritated you."},
+  {"emotion": "angry", "intensity": 3, "prompt": "Think of a time something felt unfair."},
+  {"emotion": "angry", "intensity": 4, "prompt": "Show a strong angry expression."},
+  {"emotion": "angry", "intensity": 5, "prompt": "Show your most intense angry expression you can safely make."},
+
+  {"emotion": "surprised", "intensity": 1, "prompt": "Show slight surprise, like hearing a small unexpected detail."},
+  {"emotion": "surprised", "intensity": 2, "prompt": "Show a mild surprised expression."},
+  {"emotion": "surprised", "intensity": 3, "prompt": "Show clear surprise as if something unexpected happened."},
+  {"emotion": "surprised", "intensity": 4, "prompt": "Show strong surprise with wide eyes and raised brows."},
+  {"emotion": "surprised", "intensity": 5, "prompt": "Show your strongest surprised expression."},
+
+  {"emotion": "neutral", "intensity": 3, "prompt": "Hold your natural neutral resting face."}
+]

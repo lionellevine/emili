@@ -7,3 +7,9 @@ __pycache__/
 *.pyc
 *.pyo
 keys.py
+data/personalization/
+snapshot/
+transcript/
+tts_audio/
+__pycache__/
+*.pyc

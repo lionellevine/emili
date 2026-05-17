@@ -8,38 +8,46 @@ import json
 import os
 import random
 import time
+import textwrap
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoImageProcessor, SiglipForImageClassification
 
-
+# Updated model
 MODEL_ID = "prithivMLmods/Facial-Emotion-Detection-SigLIP2"
 TARGET_EMOTIONS = ['angry', 'happy', 'neutral', 'sad', 'surprised']
+# Intensity is only estimated for non-neutral classes.
 INTENSITY_EMOTIONS = ['angry', 'happy', 'sad', 'surprised']
-TARGET_TO_SIGLIP = {'angry': 1, 'happy': 2, 'neutral': 3, 'sad': 4, 'surprised': 5}
+TARGET_TO_SIGLIP = {'angry': 1, 'happy': 2,
+                    'neutral': 3, 'sad': 4, 'surprised': 5}
 SIGLIP_INDICES = [TARGET_TO_SIGLIP[e] for e in TARGET_EMOTIONS]
 
 
+# Get current wall-clock time in milliseconds.
 def now_ms():
     return int(time.time() * 1000)
 
 
+# Create directory if missing.
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
 
+# Load prompt configuration JSON.
 def load_prompts(prompt_path):
     with open(prompt_path, 'r') as file:
         prompts = json.load(file)
     return prompts
 
 
+# Build all paths used for one user session.
 def project_paths(base_dir, user_id, session_id):
+    # Keep user artifacts isolated by user_id and session_id.
     user_root = os.path.join(base_dir, user_id)
     frames_root = os.path.join(user_root, 'frames', session_id)
     models_root = os.path.join(user_root, 'models')
@@ -67,6 +75,7 @@ def project_paths(base_dir, user_id, session_id):
     return paths
 
 
+# Open webcam.
 def open_camera(camera_id):
     camera = cv2.VideoCapture(camera_id)
     if not camera.isOpened():
@@ -74,23 +83,95 @@ def open_camera(camera_id):
     return camera
 
 
+# Draw instruction text over a camera frame.
 def draw_overlay(frame, lines, footer=None):
     overlay = frame.copy()
     h, w = overlay.shape[:2]
     y = 30
     for line in lines:
-        cv2.putText(overlay, line, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (30, 255, 30), 2, cv2.LINE_AA)
+        cv2.putText(overlay, line, (20, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65, (30, 255, 30), 2, cv2.LINE_AA)
         y += 30
 
     if footer:
-        cv2.putText(overlay, footer, (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(overlay, footer, (20, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
     return overlay
 
 
+# Draw a softer onboarding panel with larger text for readability.
+def draw_intro_overlay(frame, lines, footer=None):
+    overlay = frame.copy()
+    h, w = overlay.shape[:2]
+
+    # Soften the live camera background.
+    overlay = cv2.GaussianBlur(overlay, (9, 9), 0)
+    tint = np.full_like(overlay, (245, 245, 240), dtype=np.uint8)
+    overlay = cv2.addWeighted(overlay, 0.45, tint, 0.55, 0)
+
+    # Light instruction card in the center.
+    pad_x = int(0.07 * w)
+    pad_y = int(0.08 * h)
+    x1, y1 = pad_x, pad_y
+    x2, y2 = w - pad_x, h - pad_y
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (252, 252, 252), -1)
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (180, 180, 180), 2)
+
+    # Render text with Times New Roman where available.
+    def load_times_font(size, bold=False):
+        if bold:
+            candidates = [
+                "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
+                "/Library/Fonts/Times New Roman Bold.ttf"
+            ]
+        else:
+            candidates = [
+                "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+                "/Library/Fonts/Times New Roman.ttf"
+            ]
+        for path in candidates:
+            if os.path.exists(path):
+                return ImageFont.truetype(path, size=size)
+        # Fallback font if Times New Roman is unavailable.
+        return ImageFont.load_default()
+
+    title_font = load_times_font(64, bold=True)
+    body_font = load_times_font(40, bold=False)
+    footer_font = load_times_font(42, bold=True)
+
+    pil_img = Image.fromarray(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+
+    draw.text((x1 + 28, y1 + 20), "Personalized FER Setup",
+              font=title_font, fill=(28, 28, 28), stroke_width=1, stroke_fill=(28, 28, 28))
+
+    y = y1 + 108
+    max_chars = max(34, int((x2 - x1 - 56) / 16))
+    for line in lines:
+        wrapped = textwrap.wrap(line, width=max_chars) if len(line) > max_chars else [line]
+        for part in wrapped:
+            draw.text((x1 + 28, y), part, font=body_font, fill=(48, 48, 48))
+            y += 50
+        y += 6
+        if y > y2 - 95:
+            break
+
+    if footer:
+        draw.text((x1 + 28, y2 - 60), footer, font=footer_font, fill=(20, 20, 20))
+
+    overlay = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    return overlay
+
+
+# Show collection instructions and controls.
 def show_collection_intro(camera, prompts, seconds_per_prompt, user_id, frames_root):
+    # One pre-record screen so users know time/controls/privacy before capture.
     unique_emotions = sorted(list(set([p['emotion'] for p in prompts])))
-    non_neutral_levels = sorted(list(set([int(p['intensity']) for p in prompts if p['emotion'] != 'neutral'])))
-    neutral_levels = sorted(list(set([int(p['intensity']) for p in prompts if p['emotion'] == 'neutral'])))
+    non_neutral_levels = sorted(
+        list(set([int(p['intensity']) for p in prompts if p['emotion'] != 'neutral'])))
+    neutral_levels = sorted(
+        list(set([int(p['intensity']) for p in prompts if p['emotion'] == 'neutral'])))
     num_prompts = len(prompts)
     estimated_seconds = num_prompts * seconds_per_prompt
     estimated_minutes = estimated_seconds / 60.0
@@ -106,7 +187,7 @@ def show_collection_intro(camera, prompts, seconds_per_prompt, user_id, frames_r
             continue
 
         lines = [
-            "Personalized FER data collection",
+            "This setup records facial expressions for personalization.",
             f"User: {user_id}",
             f"Emotions recorded: {', '.join(unique_emotions)}",
             f"Total prompts: {num_prompts}",
@@ -114,12 +195,14 @@ def show_collection_intro(camera, prompts, seconds_per_prompt, user_id, frames_r
             f"Estimated recording time: ~{estimated_minutes:0.1f} minutes",
             f"Intensity levels for non-neutral: {non_neutral_levels}",
             f"Neutral rule: {neutral_note}",
-            "During recording the app auto-labels each captured frame.",
-            f"Privacy: frames are stored locally at {frames_root}",
-            "Controls: SPACE=start prompt, S=skip prompt, Q=quit collection",
-            "Press C to continue to the first prompt, or Q to exit now."
+            f"During the recording, the app labels each captured frame and frames are stored locally at {frames_root}.",
+            "Controls during prompts: SPACE=start, S=skip, Q=quit",
         ]
-        shown = draw_overlay(frame_bgr, lines)
+        shown = draw_intro_overlay(
+            frame_bgr,
+            lines,
+            footer="Press C to continue, or Q to exit."
+        )
         cv2.imshow('EMILI Personalization Capture', shown)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -128,8 +211,11 @@ def show_collection_intro(camera, prompts, seconds_per_prompt, user_id, frames_r
             return True
 
 
+# Return the largest detected face box from grayscale image.
 def largest_face(gray, face_cascade):
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+    # Pick largest face for stability when multiple faces are present.
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
     if len(faces) == 0:
         return None
     areas = [w * h for (x, y, w, h) in faces]
@@ -137,6 +223,7 @@ def largest_face(gray, face_cascade):
     return faces[idx]
 
 
+# Read existing dataset rows from CSV if present.
 def read_existing_rows(csv_path):
     if not os.path.exists(csv_path):
         return []
@@ -146,6 +233,7 @@ def read_existing_rows(csv_path):
     return rows
 
 
+# Write full dataset CSV from row dict list.
 def write_rows(csv_path, rows):
     fieldnames = [
         'user_id', 'session_id', 'frame_path', 'timestamp_ms', 'emotion_label', 'intensity_label',
@@ -158,6 +246,7 @@ def write_rows(csv_path, rows):
             writer.writerow(row)
 
 
+# Append newly collected rows into dataset CSV.
 def append_rows(csv_path, new_rows):
     rows = read_existing_rows(csv_path)
     rows.extend(new_rows)
@@ -168,11 +257,14 @@ def safe_user_text(text):
     return ''.join(ch if ch.isalnum() or ch in ['_', '-'] else '_' for ch in text)
 
 
+# Collect labeled webcam frames using prompt-guided recording.
 def collect_data(user_id, camera_id, prompts, paths, seconds_per_prompt=10, sample_fps=5):
+    # Guided collection loop: prompt -> record -> save labeled frames.
     print("Starting guided data collection.")
     print("Window controls: SPACE=start prompt, S=skip prompt, Q=quit collection")
 
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     camera = open_camera(camera_id)
 
     new_rows = []
@@ -201,7 +293,8 @@ def collect_data(user_id, camera_id, prompts, paths, seconds_per_prompt=10, samp
                     f"Emotion: {emotion}  Intensity: {intensity_text}",
                     prompt_text
                 ]
-                shown = draw_overlay(frame_bgr, lines, footer='SPACE=start | S=skip | Q=quit')
+                shown = draw_overlay(
+                    frame_bgr, lines, footer='SPACE=start | S=skip | Q=quit')
                 cv2.imshow('EMILI Personalization Capture', shown)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
@@ -229,7 +322,8 @@ def collect_data(user_id, camera_id, prompts, paths, seconds_per_prompt=10, samp
                     prompt_text,
                     f"Time left: {remaining:0.1f}s"
                 ]
-                shown = draw_overlay(frame_bgr, lines, footer='Q=quit this session')
+                shown = draw_overlay(
+                    frame_bgr, lines, footer='Q=quit this session')
                 cv2.imshow('EMILI Personalization Capture', shown)
 
                 key = cv2.waitKey(1) & 0xFF
@@ -237,6 +331,7 @@ def collect_data(user_id, camera_id, prompts, paths, seconds_per_prompt=10, samp
                     return new_rows
 
                 if time.time() >= next_capture:
+                    # Sample at fixed FPS independent of camera read rate.
                     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
                     face = largest_face(gray, face_cascade)
@@ -279,13 +374,16 @@ def collect_data(user_id, camera_id, prompts, paths, seconds_per_prompt=10, samp
 
 
 class PersonalizationDataset(Dataset):
+    # Store rows and processor for sample loading.
     def __init__(self, rows, processor):
         self.rows = rows
         self.processor = processor
 
+    # Number of dataset samples.
     def __len__(self):
         return len(self.rows)
 
+    # Load one sample image and return tensors + labels.
     def __getitem__(self, idx):
         row = self.rows[idx]
         image = Image.open(row['frame_path']).convert('RGB')
@@ -296,14 +394,18 @@ class PersonalizationDataset(Dataset):
         return pixel_values, emotion_idx, intensity
 
 
+# Merge sample tuples into a single training batch.
 def collate_batch(batch):
     pixels = torch.stack([item[0] for item in batch], dim=0)
     emotions = torch.tensor([item[1] for item in batch], dtype=torch.long)
-    intensities = torch.tensor([item[2] for item in batch], dtype=torch.float32)
+    intensities = torch.tensor([item[2]
+                               for item in batch], dtype=torch.float32)
     return pixels, emotions, intensities
 
 
+# Split rows into train/val with per-bucket stratification.
 def split_rows(rows, split_json_path, train_ratio=0.8):
+    # Stratify by emotion|intensity buckets before 80/20 split.
     buckets = {}
     for idx, row in enumerate(rows):
         key = f"{row['emotion_label']}|{row['intensity_label']}"
@@ -342,7 +444,9 @@ def split_rows(rows, split_json_path, train_ratio=0.8):
     return rows, split_info
 
 
+# Load base SigLIP2 model or optional personalized checkpoint.
 def load_model(device, checkpoint_path=None):
+    # Load base model, optionally overlay personalized checkpoint.
     processor = AutoImageProcessor.from_pretrained(MODEL_ID)
     model = SiglipForImageClassification.from_pretrained(MODEL_ID)
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -355,13 +459,17 @@ def load_model(device, checkpoint_path=None):
     return processor, model
 
 
+# Convert logits to probabilities over 5 target emotions.
 def target_probs_from_logits(logits):
+    # Restrict inference/training view to the 5 target emotions.
     subset = logits[..., SIGLIP_INDICES]
     probs = torch.softmax(subset, dim=-1)
     return probs
 
 
+# Run evaluation and write per-frame predictions + metrics.
 def evaluate_rows(rows, processor, model, device, output_csv_path, metrics_json_path, intensity_calibrator=None):
+    # Evaluate per-frame predictions and export both CSV and aggregate metrics.
     header = [
         'frame_path', 'true_label', 'true_intensity', 'predicted_label', 'predicted_intensity', 'correct_label',
         'prob_angry', 'prob_happy', 'prob_neutral', 'prob_sad', 'prob_surprised'
@@ -378,7 +486,8 @@ def evaluate_rows(rows, processor, model, device, output_csv_path, metrics_json_
         inputs = processor(images=image, return_tensors='pt').to(device)
         with torch.no_grad():
             logits = model(**inputs).logits
-            probs = target_probs_from_logits(logits).squeeze(0).detach().cpu().numpy()
+            probs = target_probs_from_logits(
+                logits).squeeze(0).detach().cpu().numpy()
 
         pred_idx = int(np.argmax(probs))
         pred_label = TARGET_EMOTIONS[pred_idx]
@@ -387,9 +496,11 @@ def evaluate_rows(rows, processor, model, device, output_csv_path, metrics_json_
         pred_prob = float(probs[pred_idx])
         sorted_probs = np.sort(probs)
         top2 = float(sorted_probs[-2]) if len(sorted_probs) > 1 else 0.0
+        # Signal combines confidence and margin to 2nd-best class.
         intensity_signal = 0.7 * pred_prob + 0.3 * max(0.0, pred_prob - top2)
 
         if pred_label == 'neutral':
+            # Neutral intentionally has no intensity output.
             pred_intensity = None
         elif intensity_calibrator and pred_label in intensity_calibrator and intensity_calibrator[pred_label].get('mode') == 'bounded_linear':
             coeff = intensity_calibrator[pred_label]
@@ -430,7 +541,8 @@ def evaluate_rows(rows, processor, model, device, output_csv_path, metrics_json_
         writer.writerow(header)
         writer.writerows(records)
 
-    macro_f1, per_class = macro_f1_score(true_labels, pred_labels, TARGET_EMOTIONS)
+    macro_f1, per_class = macro_f1_score(
+        true_labels, pred_labels, TARGET_EMOTIONS)
     metrics = {
         'num_samples': len(rows),
         'accuracy': float(correct / max(1, len(rows))),
@@ -444,6 +556,7 @@ def evaluate_rows(rows, processor, model, device, output_csv_path, metrics_json_
     return metrics
 
 
+# Compute macro-F1 and per-class F1.
 def macro_f1_score(y_true, y_pred, labels):
     per_class = {}
     f1s = []
@@ -469,7 +582,9 @@ def macro_f1_score(y_true, y_pred, labels):
     return float(np.mean(f1s) if len(f1s) > 0 else 0.0), per_class
 
 
+# Fine-tune model on train split and save best validation checkpoint.
 def train_personalized_model(rows, checkpoint_path, device, epochs=4, batch_size=8, lr=2e-5):
+    # Fine-tune classifier on user data and keep checkpoint with best val macro-F1.
     train_rows = [row for row in rows if row['split'] == 'train']
     val_rows = [row for row in rows if row['split'] == 'val']
 
@@ -482,8 +597,10 @@ def train_personalized_model(rows, checkpoint_path, device, epochs=4, batch_size
     train_dataset = PersonalizationDataset(train_rows, processor)
     val_dataset = PersonalizationDataset(val_rows, processor)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_batch)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_batch)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_batch)
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_batch)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     ce_loss = torch.nn.CrossEntropyLoss()
@@ -516,21 +633,26 @@ def train_personalized_model(rows, checkpoint_path, device, epochs=4, batch_size
                 pixels = pixels.to(device)
                 logits = model(pixel_values=pixels).logits
                 probs = torch.softmax(logits[:, SIGLIP_INDICES], dim=-1)
-                preds = torch.argmax(probs, dim=-1).detach().cpu().numpy().tolist()
+                preds = torch.argmax(
+                    probs, dim=-1).detach().cpu().numpy().tolist()
                 trues = emotions.detach().cpu().numpy().tolist()
                 val_true.extend([TARGET_EMOTIONS[t] for t in trues])
                 val_pred.extend([TARGET_EMOTIONS[p] for p in preds])
 
         macro_f1, _ = macro_f1_score(val_true, val_pred, TARGET_EMOTIONS)
         avg_loss = epoch_loss / max(1, len(train_loader))
-        print(f"Epoch {epoch + 1}/{epochs} | train_loss={avg_loss:0.4f} | val_macro_f1={macro_f1:0.4f}")
+        print(
+            f"Epoch {epoch + 1}/{epochs} | train_loss={avg_loss:0.4f} | val_macro_f1={macro_f1:0.4f}")
 
         if macro_f1 > best_macro_f1:
+            # Track best validation checkpoint.
             best_macro_f1 = macro_f1
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.state_dict().items()}
 
     if best_state is None:
-        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        best_state = {k: v.detach().cpu().clone()
+                      for k, v in model.state_dict().items()}
 
     payload = {
         'model_state_dict': best_state,
@@ -543,7 +665,9 @@ def train_personalized_model(rows, checkpoint_path, device, epochs=4, batch_size
     print(f"Saved personalized model to {checkpoint_path}")
 
 
+# Fit per-emotion intensity calibrator from correctly classified train rows.
 def fit_intensity_calibrator(rows, processor, model, device, intensity_path):
+    # Fit per-emotion bounded intensity maps using correctly classified train rows.
     train_rows = [row for row in rows if row['split'] == 'train']
     per_emotion_x = {emotion: [] for emotion in INTENSITY_EMOTIONS}
     per_emotion_y = {emotion: [] for emotion in INTENSITY_EMOTIONS}
@@ -554,7 +678,8 @@ def fit_intensity_calibrator(rows, processor, model, device, intensity_path):
         inputs = processor(images=image, return_tensors='pt').to(device)
         with torch.no_grad():
             logits = model(**inputs).logits
-            probs = target_probs_from_logits(logits).squeeze(0).detach().cpu().numpy()
+            probs = target_probs_from_logits(
+                logits).squeeze(0).detach().cpu().numpy()
 
         emotion = row['emotion_label']
         if emotion not in INTENSITY_EMOTIONS:
@@ -562,6 +687,7 @@ def fit_intensity_calibrator(rows, processor, model, device, intensity_path):
         pred_idx = int(np.argmax(probs))
         pred_label = TARGET_EMOTIONS[pred_idx]
         if pred_label != emotion:
+            # Skip mismatched predictions to reduce calibrator noise.
             continue
         emo_idx = TARGET_EMOTIONS.index(emotion)
         sorted_probs = np.sort(probs)
@@ -584,11 +710,14 @@ def fit_intensity_calibrator(rows, processor, model, device, intensity_path):
             a, b = np.linalg.lstsq(A, ys, rcond=None)[0]
             a = float(np.clip(a, 0.0, 4.0))
             b = float(np.clip(b, 1.0, 5.0))
-            calibrator[emotion] = {'mode': 'bounded_linear', 'p10': p10, 'p90': p90, 'a': a, 'b': b}
+            calibrator[emotion] = {'mode': 'bounded_linear',
+                                   'p10': p10, 'p90': p90, 'a': a, 'b': b}
         elif len(xs) >= 1:
-            calibrator[emotion] = {'mode': 'bounded_linear', 'p10': float(xs[0]), 'p90': float(xs[0] + 1e-6), 'a': 4.0, 'b': 1.0}
+            calibrator[emotion] = {'mode': 'bounded_linear', 'p10': float(
+                xs[0]), 'p90': float(xs[0] + 1e-6), 'a': 4.0, 'b': 1.0}
         else:
-            calibrator[emotion] = {'mode': 'bounded_linear', 'p10': 0.0, 'p90': 1.0, 'a': 4.0, 'b': 1.0}
+            calibrator[emotion] = {'mode': 'bounded_linear',
+                                   'p10': 0.0, 'p90': 1.0, 'a': 4.0, 'b': 1.0}
 
     calibrator['neutral'] = {'mode': 'none'}
 
@@ -599,19 +728,30 @@ def fit_intensity_calibrator(rows, processor, model, device, intensity_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Personalized FER pipeline for EMILI (SigLIP2)')
-    parser.add_argument('--user_id', type=str, required=True, help='User identifier for personalized model/data')
+    parser = argparse.ArgumentParser(
+        description='Personalized FER pipeline for EMILI (SigLIP2)')
+    parser.add_argument('--user_id', type=str, required=True,
+                        help='User identifier for personalized model/data')
     parser.add_argument('--mode', type=str, default='all',
-                        choices=['all', 'collect', 'baseline', 'finetune', 'evaluate'],
+                        choices=['all', 'collect', 'baseline',
+                                 'finetune', 'evaluate'],
                         help='Pipeline stage to run')
-    parser.add_argument('--camera_id', type=int, default=0, help='Camera device id')
-    parser.add_argument('--seconds_per_prompt', type=int, default=6, help='Seconds to record per prompt')
-    parser.add_argument('--sample_fps', type=int, default=5, help='Captured frames per second during collection')
-    parser.add_argument('--epochs', type=int, default=4, help='Fine-tuning epochs')
-    parser.add_argument('--batch_size', type=int, default=8, help='Fine-tuning batch size')
-    parser.add_argument('--learning_rate', type=float, default=2e-5, help='Fine-tuning learning rate')
-    parser.add_argument('--data_root', type=str, default='data/personalization', help='Base personalization directory')
-    parser.add_argument('--prompt_file', type=str, default='prompts_personalization.json', help='Prompt definition JSON')
+    parser.add_argument('--camera_id', type=int,
+                        default=0, help='Camera device id')
+    parser.add_argument('--seconds_per_prompt', type=int,
+                        default=6, help='Seconds to record per prompt')
+    parser.add_argument('--sample_fps', type=int, default=5,
+                        help='Captured frames per second during collection')
+    parser.add_argument('--epochs', type=int, default=4,
+                        help='Fine-tuning epochs')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='Fine-tuning batch size')
+    parser.add_argument('--learning_rate', type=float,
+                        default=2e-5, help='Fine-tuning learning rate')
+    parser.add_argument('--data_root', type=str, default='data/personalization',
+                        help='Base personalization directory')
+    parser.add_argument('--prompt_file', type=str,
+                        default='prompts_personalization.json', help='Prompt definition JSON')
     args = parser.parse_args()
 
     session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -631,26 +771,34 @@ def main():
         )
         append_rows(paths['dataset_csv'], new_rows)
         rows = read_existing_rows(paths['dataset_csv'])
-        print(f"Collected {len(new_rows)} new samples. Total samples: {len(rows)}")
+        print(
+            f"Collected {len(new_rows)} new samples. Total samples: {len(rows)}")
 
     if len(rows) == 0:
-        raise RuntimeError("No personalization data found. Run collect mode first.")
+        raise RuntimeError(
+            "No personalization data found. Run collect mode first.")
 
     usable_rows = [row for row in rows if row.get('face_detected', '1') == '1']
+    # Train/eval only on rows where face detection succeeded.
     if len(usable_rows) == 0:
-        raise RuntimeError("No usable samples with detected face found. Re-run collection with better lighting/framing.")
-    print(f"Usable samples with detected face: {len(usable_rows)} / {len(rows)}")
+        raise RuntimeError(
+            "No usable samples with detected face found. Re-run collection with better lighting/framing.")
+    print(
+        f"Usable samples with detected face: {len(usable_rows)} / {len(rows)}")
 
     if args.mode in ['all', 'finetune']:
-        usable_rows, split_info = split_rows(usable_rows, paths['split_json'], train_ratio=0.8)
+        usable_rows, split_info = split_rows(
+            usable_rows, paths['split_json'], train_ratio=0.8)
         indexed = {row['frame_path']: row for row in usable_rows}
         for i, row in enumerate(rows):
             if row['frame_path'] in indexed:
                 rows[i]['split'] = indexed[row['frame_path']]['split']
         write_rows(paths['dataset_csv'], rows)
-        print(f"Split complete: train={split_info['train_count']} val={split_info['val_count']}")
+        print(
+            f"Split complete: train={split_info['train_count']} val={split_info['val_count']}")
 
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    device = torch.device(
+        'mps' if torch.backends.mps.is_available() else 'cpu')
 
     if args.mode in ['all', 'baseline']:
         processor, model = load_model(device)
@@ -680,9 +828,11 @@ def main():
         if args.mode == 'evaluate' and os.path.exists(paths['intensity_path']):
             with open(paths['intensity_path'], 'r') as file:
                 calibrator = json.load(file)
-            print(f"Loaded intensity calibrator from {paths['intensity_path']}")
+            print(
+                f"Loaded intensity calibrator from {paths['intensity_path']}")
         else:
-            calibrator = fit_intensity_calibrator(usable_rows, processor, model, device, paths['intensity_path'])
+            calibrator = fit_intensity_calibrator(
+                usable_rows, processor, model, device, paths['intensity_path'])
         personalized_metrics = evaluate_rows(
             usable_rows,
             processor,

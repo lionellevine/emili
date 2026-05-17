@@ -3,7 +3,9 @@ numpy
 opencv-python
 tenacity
 openai
+requests
 pygame
+gensound
 tensorflow==2.15.0
 torch
 transformers
